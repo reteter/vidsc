@@ -7,6 +7,19 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 finite stream-copy proof — 15 October 2026
+
+The first bounded #13 increment (#31) copies actual AVC IDR and HEVC Main10
+CRA/RASL MP4 ranges against authored barcode sequences, exact compressed payloads,
+native reconstruction and rational timing/end oracles. Missing-context output
+controls fail closed, including RASL omission that leaves visible pixels unchanged.
+HEVC explicitly expands its end by one frame; AVC terminal-duration damage was
+normalized by the muxer and remains unexercised. This proves two synthetic finite
+ranges, not production export eligibility or the complete M3 gate. The initial
+three-iteration diagnostic budget is assessed in the
+[proof record](validation/2026-10-15-m3-copy-proof.md). Required local CI passes
+337 tests, Release build and four promotion/rollback scenarios. M1 and #28 were not resumed.
+
 ## M2 terminal and reconstruction evidence — 14 October 2026
 
 After squash-merged PR #27, #26 adds typed, independently referenced terminal qualification and
