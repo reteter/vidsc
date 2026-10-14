@@ -21,7 +21,7 @@ not planned for this checkpoint; its separate hardware profile would not close h
 Standalone repository is active at D:\code\codex\vidsc; depot copy is retained as an archive.
 Origin: https://github.com/reteter/vidsc.git. Initialization and project history are preserved.
 Test-CI passes locally (241 units, four rollback scenarios, Release compile and tracked PS syntax);
-workflow is not yet verified on GitHub. Test-Delivery is versioned; full B6 remains deferred.
+hosted CI also passes (run 38606473676, commit ee711e7), with no Node 20 deprecation warning.
 The pinned maintained source hook is Proven for IObservedPresentationSource. Every read checks
 native freshness; normalized start/end require a complete matching source map and a verified end.
 Missing map/end returns null; EOF is unknown unless independently verified. Core stores no second
@@ -47,3 +47,5 @@ Evidence: docs/validation/2026-10-14-m0-m1.md section 13, artifacts/native-final
 At that historical checkpoint, full M1 still lacked presented-frame proof, B1–B6 and visual gates. Current presentation acceptance is recorded above. M2–M8 remain unimplemented. Native timeout was source-reviewed but a deliberately hung native open was not injected. Redistribution licence clearance unresolved.
 
 Historical evidence predates the later local implementation commits.
+
+Manual Test-Delivery is versioned; full B6 and remaining host acceptance remain deferred.

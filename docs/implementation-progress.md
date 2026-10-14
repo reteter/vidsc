@@ -23,12 +23,11 @@ hardware profile rather than close this host's acceptance. Full M1 remains open;
 Standalone migration is complete at `D:\code\codex\vidsc`, with origin
 `https://github.com/reteter/vidsc.git`. The user's initialization and all 19 project commits are
 preserved. The depot copy is archival; use this repository for future work. The CI entry point
-also passes here (241 units and four rollback scenarios). Publication/GitHub execution are
-pending. See [migration details and commit mapping](repository-migration.md).
+also passes here (241 units and four rollback scenarios). Published to origin/master. Hosted CI passes on commit `ee711e7` with 241/241 tests and all rollback checks. See [migration details and commit mapping](repository-migration.md).
 
 The new standalone CI workflow calls `tools/Test-CI.ps1`: tracked PowerShell syntax, four existing
 promotion/rollback scenarios, solution restore/Release build and all 241 unit tests. The local
-entry point passes (`artifacts/ci/20261014-191742-9e673a4e/`); GitHub execution is not yet verified.
+entry point passes (`artifacts/ci/20261014-191742-9e673a4e/`); Hosted execution also passes: [Node 24 CI run](https://github.com/reteter/vidsc/actions/runs/38606473676).
 Flyleaf is now explicitly included in the solution so Release solution builds retain its Release
 configuration. This adds no native playback or real-media acceptance. See [CI policy](ci.md).
 `tools/Test-Delivery.ps1` is included in version control as the manual B6 runner. Syntax and its

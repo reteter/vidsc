@@ -32,8 +32,7 @@ alongside them. The copied bundle is the previously verified build, not a new na
 Artifact-copy checks and commit mapping are under ignored `artifacts/migration/`.
 
 `tools/Test-CI.ps1` passes in the target repository: Release compilation, 241 unit tests, four
-promotion/rollback scenarios and PowerShell syntax. GitHub workflow execution must be checked
-after publication. Manual B6 is versioned but has not run; full M1 and deferred host tests remain
+promotion/rollback scenarios and PowerShell syntax. Hosted GitHub CI also passed: run 38606473676 on commit ee711e7, with all 241 tests and artifact upload successful. Manual B6 is versioned but has not run; full M1 and deferred host tests remain
 open. No UI automation or real-media benchmarks were run during migration.
 
 ## Commit mapping
