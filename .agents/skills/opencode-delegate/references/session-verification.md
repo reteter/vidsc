@@ -8,11 +8,11 @@ contract; inspect current help/schema if the shape changes.
 
 ## Export
 
-Use the same target working directory as the worker. Outside the Codex sandbox,
-run `opencode session export --help` if the flags have not been checked, then:
+Use the same target working directory as the worker. Run
+`opencode session export --help` first if the flags have not been checked, then:
 
 ```powershell
-$runDirectory = 'D:\code\opencode\headless\artifacts\opencode-delegation\run-unique'
+$runDirectory = 'D:\code\codex\artifacts-depo\projects\vidsc\artifacts\logs\opencode-delegation\run-unique'
 $eventsPath = Join-Path $runDirectory 'worker-1.jsonl'
 $sessionID = $null
 foreach ($line in [System.IO.File]::ReadLines($eventsPath)) {

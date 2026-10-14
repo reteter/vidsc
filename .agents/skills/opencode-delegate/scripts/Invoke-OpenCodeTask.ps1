@@ -7,13 +7,24 @@ Accepts inline text or a UTF-8 prompt file. Auto-approval is enabled by default
 for this project's delegation workflow; use -Auto:$false to disable it.
 Effort selects an OpenCode catalog variant, not a separate provider setting.
 The script does not change sandbox permissions or verify session metadata.
+It requires the external OpenCode runner referenced by RunnerPath, which it
+resolves and validates but never modifies, and it does not launch OpenCode
+itself.
 .PARAMETER Model
 Full provider/model identifier, optionally with #variant. The local DeepSeek
 short name is also accepted. Other short names must be resolved by the caller.
 .PARAMETER Effort
 Variant ID appended to the model. Variant is an alias. Conflicting suffixes fail.
+.PARAMETER TimeoutSeconds
+Runner timeout in seconds, 0 to 86400. Default: 0, which disables the timeout:
+the runner applies a limit only when the value is greater than 0.
+.PARAMETER RunnerPath
+External OpenCode runner script to forward the task to. Default:
+D:\code\opencode\headless\scripts\Invoke-OpenCode.ps1 (this host). Must resolve
+to an existing file.
 .PARAMETER OutputPath
-JSONL log path. If omitted, a unique ignored artifact directory is created.
+JSONL log path. If omitted, a unique directory under the ignored
+artifacts/logs/opencode-delegation/ is created.
 .EXAMPLE
 pwsh -NoProfile -File ./Invoke-OpenCodeTask.ps1 -PromptFile ./task.txt -WorkingDirectory D:\code\my-app -Model deepseek-v4.1-flash -Effort high
 .EXAMPLE
@@ -41,9 +52,12 @@ param(
     [string] $WorkingDirectory,
 
     [ValidateRange(0, 86400)]
-    [int] $TimeoutSeconds = 600,
+    [int] $TimeoutSeconds = 0,
 
     [switch] $Auto = $true,
+
+    [ValidateNotNullOrEmpty()]
+    [string] $RunnerPath = 'D:\code\opencode\headless\scripts\Invoke-OpenCode.ps1',
 
     [string] $OutputPath,
 
@@ -54,7 +68,11 @@ param(
 $ErrorActionPreference = 'Stop'
 try {
     $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../../..'))
-    $runnerPath = Join-Path $repoRoot 'scripts/Invoke-OpenCode.ps1'
+    $runnerFile = Get-Item -LiteralPath $RunnerPath
+    if ($runnerFile.PSIsContainer -or $runnerFile.PSProvider.Name -ne 'FileSystem') {
+        throw "RunnerPath must be an existing file: $RunnerPath"
+    }
+    $runnerPath = $runnerFile.FullName
     $modelParts = $Model.Split('#')
     if ($modelParts[0] -eq 'deepseek-v4.1-flash') {
         $modelParts[0] = 'opencode-go/deepseek-v4.1-flash'
@@ -78,13 +96,14 @@ try {
     }
     if ([string]::IsNullOrWhiteSpace($Prompt)) { throw 'Task prompt must not be empty.' }
     if (-not $OutputPath) {
-        $runDirectory = Join-Path $repoRoot ('artifacts/opencode-delegation/task-' + [guid]::NewGuid().ToString('N'))
+        $runDirectory = Join-Path $repoRoot ('artifacts/logs/opencode-delegation/task-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $runDirectory | Out-Null
         $OutputPath = Join-Path $runDirectory 'events.jsonl'
     } else {
         $OutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
     }
     [Console]::Error.WriteLine("OpenCode model: $resolvedModel")
+    [Console]::Error.WriteLine("OpenCode runner: $runnerPath")
     [Console]::Error.WriteLine("OpenCode events: $OutputPath")
     $runnerArguments = @{
         Prompt = $Prompt
