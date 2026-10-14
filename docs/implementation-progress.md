@@ -1,6 +1,6 @@
 # Implementation progress
 
-Updated: 14 October 2026. Baseline: `e725ace` (M0 bundle and minimal M1 prototype).
+Updated: 15 October 2026. Baseline: `e725ace` (M0 bundle and minimal M1 prototype).
 
 This ledger records verified increments and evidence, not a parallel task backlog.
 [GitHub Issues](https://github.com/reteter/vidsc/issues) is authoritative for current work status,
@@ -66,6 +66,21 @@ and copy-snapping deltas. It creates proposals only; media qualification and exp
 eligibility remain required. Local CI passes 348 cases and all existing build/rollback
 checks; focused review verified deterministic tie-breaking and distinct delta stages.
 See [planner evidence](validation/2026-10-15-m3-planner.md). No M1 or #28 work was resumed.
+
+## M3 guarded finite-copy backend — 15 October 2026
+
+After user-approved squash merges #35/#36, actual guarded native qualification now
+feeds whole-range proposals into a bounded video-only CLI copy, full output validator
+and identity/hash-bound no-clobber transaction. Actual C# and packaged-runtime paths
+pass AVC/HEVC reconstruction/timing, progress, started cancellation, forged proposals,
+existing/late conflicts and journal recovery. Confirmed failures discard only owned
+unvalidated files; stuck jobs retain source protection and the backend slot.
+Draft audio/track/chapter policies and a separate delayed AAC/AC-3 5.1 experiment
+preserve payloads/times and inspected pulse alignment, without claiming production
+priming/edge or sample-exact support. See the
+[capability and evidence record](validation/2026-10-15-m3-backend.md).
+Generic EOF, wider/native multitrack/MKV and player gates remain open; M1 and #28
+were not resumed.
 
 ## Current workflow
 

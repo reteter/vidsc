@@ -10,6 +10,20 @@ namespace Vidsc.Tests;
 public sealed class ToolProcessRunnerTests
 {
     [Fact]
+    public async Task BoundedProgressLinesContinueAfterAnOversizedLineAndCaptureLimit()
+    {
+        var lines = new List<string>();
+        var result = await ToolProcessRunner.RunAsync(
+            Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+            ["/c", "echo " + new string('x', 4097) + "&echo out_time_us=123&echo done"],
+            TimeSpan.FromSeconds(10), default, maxCapturedCharacters:128, standardOutputLine:lines.Add);
+        Assert.True(result.Succeeded && result.ExitConfirmed);
+        Assert.Equal(new[] { "out_time_us=123", "done" }, lines);
+        Assert.Contains("[output truncated by vidsc]", result.StandardOutput);
+        Assert.True(result.StandardOutput.Length < 256);
+    }
+
+    [Fact]
     public async Task StartedCallbackIdentifiesTheLiveOwnedProcessBeforeCancellation()
     {
         using var cancellation = new CancellationTokenSource();
