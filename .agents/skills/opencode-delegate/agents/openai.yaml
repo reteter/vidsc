@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenCode Delegate"
+  short_description: "Delegate project tasks to OpenCode workers"
+  default_prompt: "Use $opencode-delegate to delegate the current task through OpenCode with model deepseek-v4.1-flash and effort high, then verify the recorded variant."
