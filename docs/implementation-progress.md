@@ -44,6 +44,9 @@ See [#22](https://github.com/reteter/vidsc/issues/22) and [the workflow](github-
 Keep `opencode-delegate` unused. Delegation is not automatic. GitHub connector operations are
 preferred where supported; gh remains the CLI fallback. This documentation increment uses local
 diff/link checks and hosted CI, without resuming host tests.
+The same workflow issue also clarifies documentation ownership: task-related documentation stays
+with its code/PR; independent documentation uses a separate default-based branch and, during
+ongoing work, an isolated worktree. Issue updates do not require a documentation branch.
 
 The issue-tracking migration ([#21](https://github.com/reteter/vidsc/issues/21)) created 21 issues,
 10 plan milestones and 26 prefixed labels. Remote content, milestone assignments, single-type/status

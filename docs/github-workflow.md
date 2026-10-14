@@ -49,6 +49,26 @@ The user grants standing authorization to create/maintain branches, commit, push
 
 Code Review provides PR inspection, diffs, checks and private review assistance. PR Completion coordinates preparation, CI/review repair and conflicts. Neither plugin supplies the user's merge decision. Routine PR follow-up in the active session is authorized; recurring/background monitoring requires a separate request. If a deferred host test is necessary for the change, keep the PR draft or explicitly blocked instead of inferring acceptance from CI.
 
+## Documentation during other work
+
+Choose branches by coherent scope, not by file extension. There is no permanent documentation branch and no mandatory separate PR for Markdown changes.
+
+| Change | Branch and PR |
+| --- | --- |
+| Feature/fix instructions, contracts, validation evidence or its progress entry | The implementation branch and PR; keep code and its explanation consistent |
+| Review correction or clarification of an open PR | That same branch and PR, even if the correction changes only documentation |
+| Independent repository policy, general guide or unrelated documentation repair | A separate `codex/<issue-or-topic>` branch from freshly fetched `origin/master` |
+| Small wording correction in text already changed for the task | Include it in the current PR; avoid unrelated document cleanup |
+| Newly discovered unrelated TODO | Record an issue immediately; implement separately when appropriate |
+
+If another branch is active, prefer a separate worktree for independent documentation work. Leave the active checkout, index and uncommitted changes untouched. Do not create the documentation branch from the feature head or copy entire modified files from that checkout; apply only the independent changes to the default-branch version. Switching branches is acceptable only with a clean checkout and no other task using it. Do not automatically stash/reset another task's work.
+
+If independent documentation edits have already been mixed into a feature file, inspect the exact diff first. Transfer only clearly separable hunks to the independent branch and verify both diffs. Preserve all other edits; if ownership or dependencies are unclear, keep the work intact and clarify rather than guessing. A separate commit on the feature branch alone does not isolate a new PR's base.
+
+Documentation that depends on unmerged implementation stays with that implementation. Use a stacked PR only when explicitly justified and document its base/dependency; do not silently present it as an independent documentation change. After a policy PR merges, update ongoing branches from the default branch when needed, using a normal merge for published branches. Apply the user's current instructions immediately, even while their documentation PR awaits merge; do not claim the policy is already on origin/master.
+
+Update the progress ledger alongside the change it describes, using compact entries to reduce conflicts. Resolve overlapping ledger/AGENTS changes by preserving both valid decisions, not by choosing an entire file from one side. Issue status remains authoritative and can be updated directly without a documentation branch.
+
 ## Connector-first integration
 
 Prefer structured GitHub connector operations for supported issue/PR reads and writes, selecting the `reteter` account for this repository. Bodies are passed directly as data, avoiding shell quoting and temporary payload files. Use `gh` for unsupported operations, GitHub API gaps and workflows that explicitly require the CLI (including PR Completion). Git operations remain local Git commands. Do not duplicate a successful write through both paths; on an ambiguous response, read back before retrying.
