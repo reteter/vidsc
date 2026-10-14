@@ -9,7 +9,8 @@ public sealed class NavigationMap
     private readonly long[] _keys;
 
     public NavigationMap(Rational timeBase, long timelineOriginTicks, IEnumerable<long> framePts,
-        IEnumerable<long> keyframePts, string? frameIndexUnavailableReason = null)
+        IEnumerable<long> keyframePts, string? frameIndexUnavailableReason = null,
+        long? terminalEndPts = null, string? terminalEndProvenance = null)
     {
         if (!timeBase.IsPositive) throw new ArgumentOutOfRangeException(nameof(timeBase));
         TimeBase = timeBase;
@@ -21,6 +22,7 @@ public sealed class NavigationMap
             // Validate before exposing lazy tick views, including an unusable frame scan's records.
             foreach (long pts in _frames) _ = ToTicks(pts);
             foreach (long pts in _keys) _ = ToTicks(pts);
+            if (terminalEndPts is { } end) _ = ToTicks(end);
         }
         catch (OverflowException exception)
         {
@@ -31,6 +33,10 @@ public sealed class NavigationMap
         for (int i = 1; i < _frames.Length; i++)
             if (_frames[i] <= _frames[i - 1])
                 FrameIndexUnavailableReason ??= "Decoded frame PTS are duplicated or not strictly increasing.";
+        if (terminalEndPts is { } terminal && (!HasFrameIndex || terminal <= _frames[^1]))
+            throw new ArgumentException("A terminal presentation end requires a complete frame index and must follow the final frame PTS.", nameof(terminalEndPts));
+        TerminalEndPts = terminalEndPts;
+        TerminalEndProvenance = terminalEndPts.HasValue ? terminalEndProvenance : null;
         FramePts = Array.AsReadOnly(_frames);
         KeyframePts = Array.AsReadOnly(_keys);
         // Transform on demand rather than retaining another per-record array.
@@ -38,6 +44,9 @@ public sealed class NavigationMap
     }
 
     public Rational TimeBase { get; }
+    /// <summary>Optional raw source metadata. Acceptance as a verified EOF end is a separate decision.</summary>
+    public long? TerminalEndPts { get; }
+    public string? TerminalEndProvenance { get; }
     /// <summary>Common container epoch, expressed in source ticks; UI = source - epoch.</summary>
     public long TimelineOriginTicks { get; }
     public string? FrameIndexUnavailableReason { get; }

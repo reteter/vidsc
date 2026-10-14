@@ -53,6 +53,7 @@ public sealed class FfprobeNavigationReader
         deadline.CancelAfter(_timeout);
         var keys = new List<long>();
         var frames = new List<long>();
+        long? lastDuration = null;
         string? unavailable = includeFrames ? null : "Decoded frame indexing was not requested.";
         await ScanAsync(path, video.Index, false, line =>
         {
@@ -70,12 +71,18 @@ public sealed class FfprobeNavigationReader
                 var record = ParseRecord(line);
                 if (!record.IsRecord) return;
                 if (++count > _maxFrameRecords) throw new InvalidDataException("Navigation frame limit exceeded; no complete map was produced.");
+                lastDuration = ParseFrameDuration(line);
                 if (record.Pts is not { } pts) { unavailable = "A decoded frame has missing or invalid PTS."; return; }
+                if (frames.Count > 0 && pts <= frames[^1]) unavailable = "Decoded frame PTS are duplicated or not strictly increasing.";
                 frames.Add(pts);
             }, deadline.Token).ConfigureAwait(false);
         }
         deadline.Token.ThrowIfCancellationRequested();
-        var map = new NavigationMap(timeBase, timelineOriginTicks, frames, keys, unavailable);
+        long? terminalEnd = null;
+        if (includeFrames && unavailable is null && frames.Count > 0 && lastDuration is { } duration)
+            terminalEnd = GetTerminalEndPts(frames[^1], duration);
+        var map = new NavigationMap(timeBase, timelineOriginTicks, frames, keys, unavailable, terminalEnd,
+            terminalEnd.HasValue ? "ffprobe decoded final frame duration metadata; requires accepted source/fixture verification" : null);
         deadline.Token.ThrowIfCancellationRequested();
         return map;
     }
@@ -98,6 +105,31 @@ public sealed class FfprobeNavigationReader
         return (true, pts, key);
     }
 
+    /// <summary>Only one positive integer duration is usable; missing, duplicate or malformed fields stay unknown.</summary>
+    public static long? ParseFrameDuration(string line)
+    {
+        string[] fields = line.Split('|');
+        if (fields.Length == 0 || fields[0] != "frame") return null;
+        long? duration = null;
+        bool seen = false;
+        foreach (string field in fields.Skip(1))
+        {
+            if (!field.StartsWith("duration=", StringComparison.Ordinal)) continue;
+            if (seen) return null;
+            seen = true;
+            if (long.TryParse(field.AsSpan(9), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed) && parsed > 0)
+                duration = parsed;
+        }
+        return duration;
+    }
+
+    public static long? GetTerminalEndPts(long finalPts, long? duration)
+    {
+        if (duration is not > 0) return null;
+        try { return checked(finalPts + duration.Value); }
+        catch (OverflowException) { return null; }
+    }
+
     private async Task ScanAsync(string path, int streamIndex, bool frames, Action<string> accept, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
@@ -111,7 +143,7 @@ public sealed class FfprobeNavigationReader
             start.ArgumentList.Add("explode");
         }
         foreach (string argument in new[] { "-v", "error", "-select_streams", streamIndex.ToString(CultureInfo.InvariantCulture),
-            frames ? "-show_frames" : "-show_packets", "-show_entries", frames ? "frame=pts" : "packet=pts,flags",
+            frames ? "-show_frames" : "-show_packets", "-show_entries", frames ? "frame=pts,duration" : "packet=pts,flags",
             "-of", "compact=p=1:nk=0", "-i", path }) start.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = start };
         if (!process.Start()) throw new IOException("ffprobe could not start.");
