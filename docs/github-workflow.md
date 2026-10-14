@@ -49,6 +49,36 @@ The user grants standing authorization to create/maintain branches, commit, push
 
 Code Review provides PR inspection, diffs, checks and private review assistance. PR Completion coordinates preparation, CI/review repair and conflicts. Neither plugin supplies the user's merge decision. Routine PR follow-up in the active session is authorized; recurring/background monitoring requires a separate request. If a deferred host test is necessary for the change, keep the PR draft or explicitly blocked instead of inferring acceptance from CI.
 
+## Merge method and squash cleanup
+
+Squash merge is the default: one coherent PR produces one default-branch commit. Keep the PR title
+suitable as the final commit subject; its description must retain relevant issue links and verification.
+Review the final squash message for privacy and accuracy instead of blindly concatenating intermediate
+commit messages. Use a merge commit only when the user explicitly chooses to preserve meaningful
+individual commits. Rebase merge is not an automatic alternative. Keep ordinary incremental commits
+and pushes on the published feature branch; squash at landing, not by rewriting that branch.
+
+PR Completion already provides the landing mechanism: its take-pr-to-completion skill ships
+scripts/pr_land.py with --mode auto --method squash. First obtain a read-only plan without --confirm,
+using the exact PR head and the same readiness-policy inputs as the watcher. After explicit user
+approval, invoke the validated confirmation flow with the returned policy digest. Auto mode may merge
+immediately; selecting squash is not permission to enable auto-merge. If a merge queue is required,
+the helper uses --mode queue without --method; verify that the queue policy matches the intended
+method and surface any conflict instead of bypassing the queue. Do not add a custom landing script.
+If the plugin is unavailable, report that prerequisite and restore it before agent-driven landing;
+the user can still choose to merge through GitHub. Do not silently substitute a different mechanism.
+
+After a confirmed squash, fetch and start subsequent work from the updated default branch. Do not
+reuse the old feature branch for a new PR. Git ancestry checks may not recognize the original feature
+commits as merged, so git branch -d may refuse deletion. Verify the PR's merged head, resulting commit,
+absence of extra branch commits and worktree dependencies; if safe deletion still refuses, retain the
+branch and report it. Forced deletion needs a separate explicit cleanup decision. Remote deletion
+continues to require a user request or repository auto-delete policy.
+
+This is a repository workflow default, not a request to disable other methods in GitHub settings.
+Repository protections and merge-queue requirements still take precedence over a chosen mechanism;
+the user's per-PR approval is always required.
+
 ## Documentation during other work
 
 Choose branches by coherent scope, not by file extension. There is no permanent documentation branch and no mandatory separate PR for Markdown changes.

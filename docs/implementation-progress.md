@@ -149,3 +149,8 @@ artifacts. Identified personal/source paths in documentation were replaced with 
 a targeted tracked-file scan found no remaining matches for the identified values. This is not a
 complete secret audit and does not erase previously published history. Historical remediation
 requires a separate user decision. No host tests were run for this documentation change.
+
+The workflow adopts squash as the default PR merge method, with merge-commit exceptions only by
+explicit user choice. PR Completion's existing validated landing helper supports squash; no custom
+script or repository-settings change was needed. Documented post-squash branch handling preserves
+branches when safe deletion refuses. This policy change does not authorize landing the workflow PR.
