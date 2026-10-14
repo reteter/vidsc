@@ -1,3 +1,4 @@
+using System.Numerics;
 using Vidsc.Core.Time;
 
 namespace Vidsc.Core.Playback;
@@ -80,13 +81,18 @@ public sealed record SeekCompletion(
 
 /// <summary>
 /// A trustworthy observation of the frame that was presented, including its presentation end.
+/// StreamIndex identifies the source stream; FrameId is an opaque, nonnegative frame identity
+/// within that stream and source generation. Neither identity is inferred from average frame rate.
 /// </summary>
 public sealed record PresentationObservation(
     SourceGeneration Generation,
     SeekRequestId? ResolvedFrom,
     RationalTime PresentedStart,
     RationalTime PresentedEnd,
-    string Evidence);
+    string Evidence,
+    int StreamIndex,
+    long FrameId,
+    long PresentationEpoch);
 
 /// <summary>Immutable snapshot for binding and for diagnostics.</summary>
 public sealed record PlaybackPositionSnapshot(
@@ -129,6 +135,7 @@ public sealed class PlaybackPositionTracker
 
     private long _nextRequestId;
     private long _generation;
+    private long _presentationEpoch;
     private PresentedFrameHookStatus _hookStatus = PresentedFrameHookStatus.Unproven;
     private string _hookEvidence = "No presented-frame hook has been verified for the pinned engine.";
 
@@ -151,6 +158,15 @@ public sealed class PlaybackPositionTracker
     }
 
     /// <summary>
+    /// Capture when frame work is scheduled, and preserve on its eventual observation. Reading the
+    /// current epoch only when a delayed callback arrives would incorrectly make old evidence fresh.
+    /// </summary>
+    public long PresentationEpoch
+    {
+        get { lock (_gate) return _presentationEpoch; }
+    }
+
+    /// <summary>
     /// Starts a new source generation. All pending state from the previous source is dropped, so a
     /// late completion, advisory update or observation from the old source cannot be applied.
     /// </summary>
@@ -159,6 +175,7 @@ public sealed class PlaybackPositionTracker
         lock (_gate)
         {
             _generation++;
+            InvalidatePresentationCore();
             _seekState = PlaybackSeekState.None;
             _desired = null;
             _pending = null;
@@ -166,8 +183,6 @@ public sealed class PlaybackPositionTracker
             _lastCompletion = null;
             _advisory = null;
             _advisoryEqualsEcho = false;
-            _observed = null;
-
             return new SourceGeneration(_generation);
         }
     }
@@ -205,7 +220,7 @@ public sealed class PlaybackPositionTracker
 
             // A new request invalidates any previously observed presented frame: it described an
             // older position, so exact-boundary eligibility must not survive the request.
-            _observed = null;
+            InvalidatePresentationCore();
 
             // The engine rewrites its reported time with the requested value as soon as a seek
             // starts, so any previously reported advisory value is void.
@@ -276,7 +291,9 @@ public sealed class PlaybackPositionTracker
     {
         lock (_gate)
         {
-            if (_hookStatus != PresentedFrameHookStatus.Proven || observation.Generation != new SourceGeneration(_generation))
+            if (_hookStatus != PresentedFrameHookStatus.Proven || observation.Generation != new SourceGeneration(_generation)
+                || _generation == 0 || observation.PresentationEpoch != _presentationEpoch
+                || !IsValidObservation(observation))
             {
                 _rejectedObservationCount++;
                 return false;
@@ -310,8 +327,36 @@ public sealed class PlaybackPositionTracker
             _hookEvidence = evidence;
 
             if (status != PresentedFrameHookStatus.Proven)
-                _observed = null;
+                InvalidatePresentationCore();
         }
+    }
+
+    /// <summary>Invalidates frame evidence before a transport command or renderer teardown.</summary>
+    public void InvalidatePresentation()
+    {
+        lock (_gate)
+            InvalidatePresentationCore();
+    }
+
+    private void InvalidatePresentationCore()
+    {
+        _presentationEpoch = checked(_presentationEpoch + 1);
+        _observed = null;
+    }
+
+    private static bool IsValidObservation(PresentationObservation observation)
+    {
+        if (observation.StreamIndex < 0 || observation.FrameId < 0
+            || string.IsNullOrWhiteSpace(observation.Evidence)
+            || !observation.PresentedStart.TimeBase.IsPositive
+            || !observation.PresentedEnd.TimeBase.IsPositive)
+            return false;
+
+        // Compare without reducing to a long rational: valid large PTS values may overflow AsSeconds.
+        RationalTime start = observation.PresentedStart;
+        RationalTime end = observation.PresentedEnd;
+        return (BigInteger)end.Value * end.TimeBase.Numerator * start.TimeBase.Denominator
+            > (BigInteger)start.Value * start.TimeBase.Numerator * end.TimeBase.Denominator;
     }
 
     public PlaybackPositionSnapshot Snapshot()
@@ -322,6 +367,9 @@ public sealed class PlaybackPositionTracker
                 _hookStatus == PresentedFrameHookStatus.Proven
                 && _observed is not null
                 && _observed.Generation == new SourceGeneration(_generation)
+                && _observed.PresentationEpoch == _presentationEpoch
+                && IsValidObservation(_observed)
+                && _pending is null
                 && _seekState != PlaybackSeekState.Pending;
 
             return new PlaybackPositionSnapshot(

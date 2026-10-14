@@ -13,6 +13,127 @@ public sealed class PlaybackPositionTrackerTests
 {
     private static RationalTime Ticks(long value) => new(value, TimeBases.Ticks);
 
+    [Theory]
+    [InlineData(10, 10)]
+    [InlineData(20, 10)]
+    public void ObservePresentation_RejectsAnEmptyOrReversedInterval(long start, long end)
+    {
+        var tracker = new PlaybackPositionTracker();
+        SourceGeneration generation = tracker.BeginSource();
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+
+        Assert.False(tracker.ObservePresentation(new PresentationObservation(
+            generation, null, Ticks(start), Ticks(end), "verified", 0, 1, tracker.PresentationEpoch)));
+        Assert.Null(tracker.Snapshot().ObservedPresentation);
+        Assert.False(tracker.Snapshot().ExactBoundariesEligible);
+    }
+
+    [Theory]
+    [InlineData(-1, 1)]
+    [InlineData(0, -1)]
+    public void ObservePresentation_RequiresStreamAndFrameIdentity(int streamIndex, long frameId)
+    {
+        var tracker = new PlaybackPositionTracker();
+        SourceGeneration generation = tracker.BeginSource();
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+
+        Assert.False(tracker.ObservePresentation(new PresentationObservation(
+            generation, null, Ticks(10), Ticks(20), "verified", streamIndex, frameId, tracker.PresentationEpoch)));
+        Assert.False(tracker.Snapshot().ExactBoundariesEligible);
+    }
+
+    [Fact]
+    public void ObservePresentation_RejectsNonpositiveTimeBasesAndMissingEvidence()
+    {
+        var tracker = new PlaybackPositionTracker();
+        SourceGeneration generation = tracker.BeginSource();
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+        var valid = new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified", 0, 1, tracker.PresentationEpoch);
+
+        Assert.False(tracker.ObservePresentation(valid with { PresentedStart = default }));
+        Assert.False(tracker.ObservePresentation(valid with { PresentedEnd = new RationalTime(20, Rational.Create(-1, 100)) }));
+        Assert.False(tracker.ObservePresentation(valid with { Evidence = " " }));
+    }
+
+    [Fact]
+    public void ObservePresentation_PreservesIdentityAndComparesDifferentLargeTimeBasesExactly()
+    {
+        var tracker = new PlaybackPositionTracker();
+        SourceGeneration generation = tracker.BeginSource();
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+        var observation = new PresentationObservation(generation, null,
+            new RationalTime(long.MaxValue, Rational.Create(2, 3)),
+            new RationalTime(long.MaxValue, Rational.Create(3, 4)), "verified", 2, 42, tracker.PresentationEpoch);
+
+        Assert.True(tracker.ObservePresentation(observation));
+        Assert.Equal(observation, tracker.Snapshot().ObservedPresentation);
+        Assert.True(tracker.Snapshot().ExactBoundariesEligible);
+    }
+
+    [Fact]
+    public void InvalidatePresentation_RemovesEligibilityUntilFreshFrameEvidenceArrives()
+    {
+        var tracker = new PlaybackPositionTracker();
+        SourceGeneration generation = tracker.BeginSource();
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+        var observation = new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified", 0, 1, tracker.PresentationEpoch);
+        Assert.True(tracker.ObservePresentation(observation));
+
+        tracker.InvalidatePresentation();
+        tracker.ReportAdvisoryPosition(Ticks(30), generation);
+
+        Assert.True(tracker.PresentationEpoch > observation.PresentationEpoch);
+        Assert.False(tracker.ObservePresentation(observation));
+        Assert.Null(tracker.Snapshot().ObservedPresentation);
+        Assert.False(tracker.Snapshot().ExactBoundariesEligible);
+        Assert.True(tracker.ObservePresentation(observation with { PresentationEpoch = tracker.PresentationEpoch, FrameId = 2, PresentedStart = Ticks(30), PresentedEnd = Ticks(40) }));
+        Assert.True(tracker.Snapshot().ExactBoundariesEligible);
+    }
+
+    [Fact]
+    public void RequestSeek_RejectsDelayedUncorrelatedEvidenceFromBeforeTheCommand()
+    {
+        var tracker = new PlaybackPositionTracker();
+        SourceGeneration generation = tracker.BeginSource();
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+        var oldFrame = new PresentationObservation(generation, null, Ticks(10), Ticks(20),
+            "verified", 0, 1, tracker.PresentationEpoch);
+        Assert.True(tracker.ObservePresentation(oldFrame));
+
+        SeekCommand command = tracker.RequestSeek(Ticks(100), accurate: true);
+        Assert.True(tracker.PresentationEpoch > oldFrame.PresentationEpoch);
+        Assert.False(tracker.ObservePresentation(oldFrame));
+        tracker.CompleteSeek(new SeekCompletion(command.Id, generation, Ticks(100), true, true));
+        Assert.False(tracker.ObservePresentation(oldFrame));
+        Assert.False(tracker.Snapshot().ExactBoundariesEligible);
+
+        Assert.True(tracker.ObservePresentation(oldFrame with
+        {
+            PresentationEpoch = tracker.PresentationEpoch,
+            FrameId = 2,
+            PresentedStart = Ticks(100),
+            PresentedEnd = Ticks(110),
+        }));
+        Assert.True(tracker.Snapshot().ExactBoundariesEligible);
+    }
+
+    [Fact]
+    public void HookDowngrade_InvalidatesDelayedEvidenceEvenAfterTrustIsRestored()
+    {
+        var tracker = new PlaybackPositionTracker();
+        SourceGeneration generation = tracker.BeginSource();
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+        var oldFrame = new PresentationObservation(generation, null, Ticks(10), Ticks(20),
+            "verified", 0, 1, tracker.PresentationEpoch);
+        Assert.True(tracker.ObservePresentation(oldFrame));
+
+        tracker.SetHookStatus(PresentedFrameHookStatus.AdvisoryOnly, "lost hook");
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified again");
+
+        Assert.False(tracker.ObservePresentation(oldFrame));
+        Assert.False(tracker.Snapshot().ExactBoundariesEligible);
+    }
+
     [Fact]
     public void RequestSeek_BecomesPendingAndSupersedesThePreviousRequest()
     {
@@ -99,7 +220,7 @@ public sealed class PlaybackPositionTrackerTests
         tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "test evidence");
         tracker.RequestSeek(Ticks(1000), accurate: true);
         tracker.ReportAdvisoryPosition(Ticks(900), first);
-        tracker.ObservePresentation(new PresentationObservation(first, null, Ticks(880), Ticks(881), "test"));
+        tracker.ObservePresentation(new PresentationObservation(first, null, Ticks(880), Ticks(881), "test", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch));
 
         Assert.NotNull(tracker.Snapshot().ObservedPresentation);
 
@@ -126,6 +247,9 @@ public sealed class PlaybackPositionTrackerTests
 
         Assert.False(tracker.CompleteSeek(new SeekCompletion(command.Id, first, Ticks(1000), IsRequestEcho: true, Success: true)));
         Assert.False(tracker.ReportAdvisoryPosition(Ticks(1000), first));
+        tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
+        Assert.False(tracker.ObservePresentation(new PresentationObservation(
+            first, null, Ticks(1000), Ticks(1001), "old source", 0, 1, tracker.PresentationEpoch)));
 
         PlaybackPositionSnapshot snapshot = tracker.Snapshot();
 
@@ -141,7 +265,7 @@ public sealed class PlaybackPositionTrackerTests
         var tracker = new PlaybackPositionTracker();
         SourceGeneration generation = tracker.BeginSource();
 
-        bool rejected = tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "guess"));
+        bool rejected = tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "guess", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch));
 
         Assert.False(rejected);
         Assert.Null(tracker.Snapshot().ObservedPresentation);
@@ -149,12 +273,12 @@ public sealed class PlaybackPositionTrackerTests
 
         tracker.SetHookStatus(PresentedFrameHookStatus.AdvisoryOnly, "curt time only");
 
-        Assert.False(tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "guess")));
+        Assert.False(tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "guess", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch)));
         Assert.Null(tracker.Snapshot().ObservedPresentation);
 
         tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "presented-frame hook verified");
 
-        Assert.True(tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified")));
+        Assert.True(tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch)));
         Assert.NotNull(tracker.Snapshot().ObservedPresentation);
     }
 
@@ -165,7 +289,7 @@ public sealed class PlaybackPositionTrackerTests
         SourceGeneration generation = tracker.BeginSource();
 
         tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
-        tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified"));
+        tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch));
         Assert.NotNull(tracker.Snapshot().ObservedPresentation);
 
         tracker.SetHookStatus(PresentedFrameHookStatus.AdvisoryOnly, "hook no longer trusted");
@@ -184,7 +308,7 @@ public sealed class PlaybackPositionTrackerTests
         SeekCommand requestA = tracker.RequestSeek(Ticks(100), accurate: true);
         tracker.CompleteSeek(new SeekCompletion(requestA.Id, generation, Ticks(100), IsRequestEcho: true, Success: true));
 
-        Assert.True(tracker.ObservePresentation(new PresentationObservation(generation, requestA.Id, Ticks(100), Ticks(101), "verified A")));
+        Assert.True(tracker.ObservePresentation(new PresentationObservation(generation, requestA.Id, Ticks(100), Ticks(101), "verified A", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch)));
         Assert.True(tracker.Snapshot().ExactBoundariesEligible);
 
         // The repro from the review: a new request must drop the observation of the previous position.
@@ -212,12 +336,12 @@ public sealed class PlaybackPositionTrackerTests
 
         // A is superseded by B, so a late observation that resolves A must be rejected even though it
         // is tagged with the current source generation.
-        Assert.False(tracker.ObservePresentation(new PresentationObservation(generation, requestA.Id, Ticks(100), Ticks(101), "late A")));
+        Assert.False(tracker.ObservePresentation(new PresentationObservation(generation, requestA.Id, Ticks(100), Ticks(101), "late A", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch)));
         Assert.Null(tracker.Snapshot().ObservedPresentation);
         Assert.False(tracker.Snapshot().ExactBoundariesEligible);
 
         // An observation correlated with the newest request is accepted.
-        Assert.True(tracker.ObservePresentation(new PresentationObservation(generation, requestB.Id, Ticks(200), Ticks(201), "B")));
+        Assert.True(tracker.ObservePresentation(new PresentationObservation(generation, requestB.Id, Ticks(200), Ticks(201), "B", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch)));
         Assert.NotNull(tracker.Snapshot().ObservedPresentation);
         Assert.Equal(Ticks(200), tracker.Snapshot().ObservedPresentation!.PresentedStart);
     }
@@ -229,7 +353,7 @@ public sealed class PlaybackPositionTrackerTests
         SourceGeneration generation = tracker.BeginSource();
         tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
 
-        Assert.False(tracker.ObservePresentation(new PresentationObservation(generation, new SeekRequestId(999), Ticks(1), Ticks(2), "unknown")));
+        Assert.False(tracker.ObservePresentation(new PresentationObservation(generation, new SeekRequestId(999), Ticks(1), Ticks(2), "unknown", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch)));
         Assert.Null(tracker.Snapshot().ObservedPresentation);
     }
 
@@ -240,7 +364,7 @@ public sealed class PlaybackPositionTrackerTests
         SourceGeneration generation = tracker.BeginSource();
 
         tracker.SetHookStatus(PresentedFrameHookStatus.Proven, "verified");
-        tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified"));
+        tracker.ObservePresentation(new PresentationObservation(generation, null, Ticks(10), Ticks(20), "verified", StreamIndex: 0, FrameId: 1, PresentationEpoch: tracker.PresentationEpoch));
 
         Assert.True(tracker.Snapshot().ExactBoundariesEligible);
 

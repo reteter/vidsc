@@ -191,6 +191,7 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
 
         try
         {
+            _positions.InvalidatePresentation();
             _player.ShowFrameNext();
             PublishAdvisoryFromEngine();
         }
@@ -208,6 +209,7 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
 
         try
         {
+            _positions.InvalidatePresentation();
             _player.ShowFramePrev();
             PublishAdvisoryFromEngine();
         }
@@ -242,6 +244,7 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
         if (_disposed || _openUnusable) return;
         try
         {
+            _positions.InvalidatePresentation();
             _player.Stop();
         }
         catch (Exception exception)
@@ -349,6 +352,7 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
                 return;
 
             _disposed = true;
+            _positions.InvalidatePresentation();
 
             _advisoryTimer.Dispose();
             _player.SeekCompleted -= OnSeekCompleted;
