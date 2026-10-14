@@ -102,7 +102,11 @@ public partial class App : Application
                 : "NOT started: " + engineReport.Error));
             viewModel.AppendLog("Toolset: " + paths.ApplicationDirectory);
 
-            if (options.SmokeTest)
+            if (options.Benchmark is not null)
+            {
+                _ = RunBenchmarkAsync(options, viewModel, engine);
+            }
+            else if (options.SmokeTest)
             {
                 _ = RunSmokeAsync(options, viewModel, engine, paths, toolset, engineReport);
             }
@@ -117,6 +121,19 @@ public partial class App : Application
         }
     }
 
+    private async Task RunBenchmarkAsync(CommandLineOptions options, MainViewModel viewModel, IPlaybackEngine engine)
+    {
+        int exitCode = 2;
+        try
+        {
+            exitCode = await new BenchmarkRunner(options, viewModel, engine, _window!).RunAsync();
+        }
+        catch (Exception exception)
+        {
+            viewModel.AppendLog("BENCHMARK EXCEPTION " + exception);
+        }
+        await RequestShutdownAsync(exitCode);
+    }
     private async Task RunSmokeAsync(
         CommandLineOptions options,
         MainViewModel viewModel,

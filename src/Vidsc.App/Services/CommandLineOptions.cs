@@ -1,93 +1,76 @@
+using System.Globalization;
 using System.Text;
 
 namespace Vidsc.App.Services;
 
-/// <summary>
-/// Command-line options understood by the application.
-/// </summary>
-/// <remarks>
-/// <c>--smoke-test</c> is the harness mode used by <c>tools/Build-Release.ps1</c> verification and by
-/// the automated checks: it drives a scripted open/play/seek/step/dispose sequence against a real
-/// window, writes a JSON report and exits with a nonzero code on failure. It never shows a modal
-/// error dialog, so a failure is reported as data rather than as a blocked process.
-/// </remarks>
-public sealed record CommandLineOptions(
-    bool SmokeTest,
-    IReadOnlyList<string> MediaPaths,
-    string? ReportPath,
-    string? LogPath,
-    bool ExitAfterOpen)
+public sealed record CommandLineOptions(bool SmokeTest, IReadOnlyList<string> MediaPaths,
+    string? ReportPath, string? LogPath, bool ExitAfterOpen)
 {
+    public string? Benchmark { get; init; }
+    public int BenchmarkDurationSeconds { get; init; } = 900;
+    public int BenchmarkOpenCount { get; init; } = 3;
+
     public static CommandLineOptions Parse(IReadOnlyList<string> args)
     {
-        bool smokeTest = false;
-        bool exitAfterOpen = false;
-        string? reportPath = null;
-        string? logPath = null;
+        bool smoke = false, exit = false;
+        string? report = null, log = null, benchmark = null;
+        int duration = 900, opens = 3;
         var media = new List<string>();
-
-        for (int index = 0; index < args.Count; index++)
+        for (int i = 0; i < args.Count; i++)
         {
-            string argument = args[index];
-
-            switch (argument)
+            switch (args[i])
             {
-                case "--smoke-test":
-                    smokeTest = true;
-                    break;
-
-                case "--exit-after-open":
-                    exitAfterOpen = true;
-                    break;
-
-                case "--report":
-                    reportPath = TakeValue(args, ref index, argument);
-                    break;
-
-                case "--log":
-                    logPath = TakeValue(args, ref index, argument);
-                    break;
-
-                case "--media":
-                    string? value = TakeValue(args, ref index, argument);
-                    if (!string.IsNullOrWhiteSpace(value))
-                        media.Add(value);
-                    break;
-
+                case "--smoke-test": smoke = true; break;
+                case "--exit-after-open": exit = true; break;
+                case "--report": report = TakeValue(args, ref i); break;
+                case "--log": log = TakeValue(args, ref i); break;
+                case "--media": media.Add(TakeValue(args, ref i)); break;
+                case "--benchmark": benchmark = TakeValue(args, ref i); break;
+                case "--duration-seconds": duration = PositiveInteger(TakeValue(args, ref i)); break;
+                case "--open-count": opens = PositiveInteger(TakeValue(args, ref i)); break;
                 default:
-                    // A bare path is accepted so the shell can pass a file directly.
-                    if (!argument.StartsWith("--", StringComparison.Ordinal))
-                        media.Add(argument);
-                    break;
+                    if (args[i].StartsWith("--", StringComparison.Ordinal))
+                        throw new ArgumentException("Unknown option: " + args[i]);
+                    media.Add(args[i]); break;
             }
         }
-
-        return new CommandLineOptions(smokeTest, media, reportPath, logPath, exitAfterOpen);
+        if (benchmark is not null)
+        {
+            if (benchmark is not ("open" or "seek" or "playback" or "lifecycle"))
+                throw new ArgumentException("Benchmark must be open, seek, playback or lifecycle.");
+            if (smoke || media.Count == 0 || report is null)
+                throw new ArgumentException("Benchmark requires --media and --report and cannot use --smoke-test.");
+            if (File.Exists(Path.GetFullPath(report)) || Directory.Exists(Path.GetFullPath(report)))
+                throw new ArgumentException("Benchmark report must be a new file.");
+            if (log is not null && File.Exists(Path.GetFullPath(log)))
+                throw new ArgumentException("Benchmark log must be a new file.");
+        }
+        foreach (string output in new[] { report, log }.OfType<string>())
+            if (media.Any(path => string.Equals(Path.GetFullPath(output), Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase)))
+                throw new ArgumentException("Report and log paths must not alias any media input.");
+        return new(smoke, media, report, log, exit)
+        { Benchmark = benchmark, BenchmarkDurationSeconds = duration, BenchmarkOpenCount = opens };
     }
 
-    private static string? TakeValue(IReadOnlyList<string> args, ref int index, string option)
+    private static string TakeValue(IReadOnlyList<string> args, ref int index)
     {
-        if (index + 1 >= args.Count)
-            throw new ArgumentException($"Option {option} requires a value.", nameof(args));
-
+        string option = args[index];
+        if (index + 1 >= args.Count || string.IsNullOrWhiteSpace(args[index + 1])
+            || args[index + 1].StartsWith("--", StringComparison.Ordinal))
+            throw new ArgumentException($"Option {option} requires a value.");
         return args[++index];
     }
 
+    private static int PositiveInteger(string value) =>
+        int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int number) && number > 0
+            ? number : throw new ArgumentException("Duration and open count must be positive integers.");
+
     public string Describe()
     {
-        var builder = new StringBuilder();
-        builder.Append("smoke-test=").Append(SmokeTest);
-        builder.Append(", exit-after-open=").Append(ExitAfterOpen);
-
-        if (ReportPath is not null)
-            builder.Append(", report=").Append(ReportPath);
-
-        if (LogPath is not null)
-            builder.Append(", log=").Append(LogPath);
-
-        foreach (string path in MediaPaths)
-            builder.Append(", media=").Append(path);
-
+        var builder = new StringBuilder($"smoke-test={SmokeTest}, exit-after-open={ExitAfterOpen}, benchmark={Benchmark}");
+        if (ReportPath is not null) builder.Append(", report=").Append(ReportPath);
+        if (LogPath is not null) builder.Append(", log=").Append(LogPath);
+        foreach (string path in MediaPaths) builder.Append(", media=").Append(path);
         return builder.ToString();
     }
 }
