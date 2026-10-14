@@ -195,8 +195,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 : _navigationOverride(path, info.PrimaryVideo!, info.ContainerStartTicks ?? 0, includeFrames, cancellation.Token));
             if (generation != _openToken || cancellation.IsCancellationRequested) return;
             if (!includeFrames && _navigationMap?.HasFrameIndex == true)
-                map = new NavigationMap(map.TimeBase, map.TimelineOriginTicks, _navigationMap.FramePts, map.KeyframePts);
+                map = new NavigationMap(map.TimeBase, map.TimelineOriginTicks, _navigationMap.FramePts, map.KeyframePts,
+                    terminalEndPts: _navigationMap.TerminalEndPts, terminalEndProvenance: _navigationMap.TerminalEndProvenance);
             _navigationMap = map;
+            if (_engine is IFrameBoundaryMapConsumer consumer)
+                consumer.SetBoundaryMap(map.HasFrameIndex
+                    ? new PresentationBoundaryMap(_engine.Positions.Generation.Value, info.PrimaryVideo!.Index, map)
+                    : null);
             NavigationReason = map.HasFrameIndex
                 ? $"{map.FrameCount:N0} file frames; {map.KeyframeTicks.Count:N0} keyframe candidates (not safe cuts)."
                 : (map.FrameIndexUnavailableReason ?? "Frame index not built; choose Build frame index.") + $" {map.KeyframeTicks.Count:N0} keyframe candidates (not safe cuts).";
@@ -229,7 +234,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public bool IsExactEditingEnabled => false;
 
     public string ExactEditingReason { get; } =
-        "Disabled: the pinned FlyleafLib 3.11.11 build publishes no presented-frame PTS/end hook. "
+        "Disabled: the experimental presentation hook and source boundary mapping require full acceptance. "
         + "See the hook evidence in the diagnostics panel.";
 
     public string? SceneReason { get; }
@@ -1088,7 +1093,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             $"release dir    : {manifest.ReleaseDirectory}",
             $"ffmpeg         : {manifest.FfmpegVersion}",
             $"ffprobe        : {manifest.FfprobeVersion}",
-            $"flyleaf        : {manifest.FlyleafVersion}",
+            $"flyleaf        : {manifest.FlyleafManagedBuild ?? manifest.FlyleafVersion}",
             $"hashed files   : {manifest.Files.Count}");
     }
 

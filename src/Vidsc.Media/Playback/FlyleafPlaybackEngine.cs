@@ -1,7 +1,9 @@
 using FlyleafLib;
 using FlyleafLib.MediaPlayer;
+using FlyleafLib.MediaFramework.MediaRenderer;
 
 using Vidsc.Core.Playback;
+using Vidsc.Core.Navigation;
 using Vidsc.Core.Time;
 
 namespace Vidsc.Media.Playback;
@@ -21,12 +23,13 @@ namespace Vidsc.Media.Playback;
 /// <item><description>Source opens are serialized around their owned native call and source
 /// generation, so a late open callback cannot resolve a newer source.</description></item>
 /// <item><description><c>Player.CurTime</c> is polled and stored in the advisory slot only. It is not
-/// proof of what was presented, and the observed-presentation slot is left empty.</description></item>
+/// proof of what was presented. Experimental typed candidates have separate diagnostics and leave
+/// the observed-presentation slot empty until independent hook acceptance.</description></item>
 /// </list>
 /// Engine callbacks run on Flyleaf's playback/seek threads; this adapter only mutates thread-safe
 /// state and raises a single <see cref="StateChanged"/> event for the UI to marshal.
 /// </remarks>
-public sealed class FlyleafPlaybackEngine : IPlaybackEngine
+public sealed class FlyleafPlaybackEngine : IPlaybackEngine, IFrameBoundaryMapConsumer
 {
     private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(30);
 
@@ -44,6 +47,53 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
     private Task<OpenCompletedArgs>? _nativeOpenTask;
     private readonly object _seekGate = new();
     private volatile bool _sourceOpening;
+    private PresentationCandidateDiagnostic? _lastPresentationCandidate;
+    private PresentationBoundaryMap? _boundaryMap;
+    private Task? _presentationRecovery;
+    private bool _presentationRecoveryRequested;
+    private bool _presentationRecoveryAllowed;
+    private long? _mappedStepTarget;
+    private (long Generation, long? SeekId, long RawPts)? _expectedStep;
+
+    /// <summary>Experimental evidence only; never enables exact editing.</summary>
+    public PresentationCandidateDiagnostic? LastPresentationCandidate
+    {
+        get { lock (_seekGate) return _lastPresentationCandidate; }
+    }
+
+    public event EventHandler? PresentationCandidateChanged;
+
+    /// <summary>Immutable vendor correlation state for acceptance diagnostics.</summary>
+    public PresentationDiagnostics PresentationState => _player.Presentation.Snapshot();
+
+    public void SetBoundaryMap(PresentationBoundaryMap? map)
+    {
+        lock (_seekGate)
+        {
+            if (_disposed) return;
+            _boundaryMap = map;
+            if (_lastPresentationCandidate is { } diagnostic)
+            {
+                PlaybackPositionSnapshot snapshot = _positions.Snapshot();
+                PresentedFrameCandidate candidate = diagnostic.Candidate;
+                if (PresentationCandidateMapper.IsCurrentOperation(candidate, snapshot, _positions.PresentationEpoch))
+                {
+                    candidate = PresentationCandidateMapper.WithBoundaryMap(candidate, map);
+                    PresentationCandidateMapper.TryMap(candidate, snapshot, _positions.PresentationEpoch,
+                        out PresentationObservation? normalized);
+                    if (_expectedStep is { } expected && expected.Generation == candidate.Generation.Value
+                        && expected.SeekId == candidate.ResolvedFrom?.Value && expected.RawPts != candidate.OriginalPts)
+                        normalized = null;
+                    // Retain the raw event candidate so removing or replacing a map cannot retain
+                    // a boundary that was supplied solely by the previous external map.
+                    _lastPresentationCandidate = diagnostic with { NormalizedObservation = normalized };
+                }
+                else _lastPresentationCandidate = null;
+            }
+        }
+        PresentationCandidateChanged?.Invoke(this, EventArgs.Empty);
+        RaiseStateChanged();
+    }
 
     public FlyleafPlaybackEngine(Player player)
     {
@@ -55,6 +105,9 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
         _player.PropertyChanged += OnPlayerPropertyChanged;
 
         _positions.SetHookStatus(FlyleafPresentedFrameHook.Status, FlyleafPresentedFrameHook.EvidenceSummary);
+        _player.Presentation.Confirmed += OnPresentationConfirmed;
+        _player.Presentation.Invalidated += OnPresentationInvalidated;
+        _player.PresentationSeekIdle += OnPresentationSeekIdle;
 
         _advisoryTimer = new Timer(OnAdvisoryTick, null, TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(200));
 
@@ -101,7 +154,15 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
             {
                 _sourceOpening = true;
                 generation = _positions.BeginSource();
+                _presentationRecoveryAllowed = false;
+                _presentationRecoveryRequested = false;
+                _expectedStep = null;
+                _boundaryMap = null;
                 _seeks.Reset();
+                _lastPresentationCandidate = null;
+                _player.Presentation.BeginSource(generation.Value);
+                PublishPresentationOperation();
+                Monitor.PulseAll(_seekGate);
             }
             _lastReportedAdvisoryTicks = -1;
 
@@ -124,6 +185,7 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
                     return OpenSourceResult.Failed(_lastError);
                 }
 
+                lock (_seekGate) _presentationRecoveryAllowed = true;
                 SetStatus(PlaybackEngineStatus.Paused);
 
                 return new OpenSourceResult(true, null, SafeDurationTicks());
@@ -148,6 +210,8 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
         {
             _sourceOpening = false;
             _openGate.Release();
+            lock (_seekGate)
+                if (_status == PlaybackEngineStatus.Paused) RequestPresentationRecovery();
         }
     }
 
@@ -191,8 +255,18 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
 
         try
         {
-            _positions.InvalidatePresentation();
-            _player.ShowFrameNext();
+            _player.Pause();
+            if (!WaitForConfirmedPausedFrame())
+            {
+                RaiseStateChanged();
+                return;
+            }
+            lock (_seekGate)
+            {
+                if (TryStepFromBoundaryMap(next: true)) return;
+                InvalidatePresentation();
+                _player.ShowFrameNext();
+            }
             PublishAdvisoryFromEngine();
         }
         catch (Exception exception)
@@ -209,14 +283,101 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
 
         try
         {
-            _positions.InvalidatePresentation();
-            _player.ShowFramePrev();
+            _player.Pause();
+            if (!WaitForConfirmedPausedFrame())
+            {
+                RaiseStateChanged();
+                return;
+            }
+            lock (_seekGate)
+            {
+                if (TryStepFromBoundaryMap(next: false)) return;
+                InvalidatePresentation();
+                _player.ShowFramePrev();
+            }
             PublishAdvisoryFromEngine();
         }
         catch (Exception exception)
         {
             _lastError = "Frame step failed: " + exception.Message;
         }
+    }
+
+    private bool WaitForConfirmedPausedFrame()
+    {
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        lock (_seekGate)
+        {
+            if (_boundaryMap is null) return true;
+            SourceGeneration generation = _positions.Generation;
+            while (!_disposed && !_openUnusable && !_sourceOpening && _positions.Generation == generation)
+            {
+                PresentationDiagnostics native = _player.Presentation.Snapshot();
+                if (!_seeks.HasInFlight && _lastPresentationCandidate is { } diagnostic
+                    && PresentationCandidateMapper.IsCurrentOperation(diagnostic.Candidate,
+                        _positions.Snapshot(), _positions.PresentationEpoch)
+                    && diagnostic.SwapChainEpoch == native.SwapChainEpoch
+                    && diagnostic.PresentId == native.LastSubmitted
+                    && diagnostic.PresentId == native.LastConfirmed)
+                    return true;
+
+                TimeSpan remaining = TimeSpan.FromMilliseconds(500) - timeout.Elapsed;
+                if (remaining <= TimeSpan.Zero) break;
+                RequestPresentationRecovery();
+                // Releases the adapter gate while actual confirmation/invalidations wake us.
+                Monitor.Wait(_seekGate, remaining);
+            }
+            _lastError = "Frame step is waiting for a confirmed paused frame; try again after presentation settles.";
+            return false;
+        }
+    }
+
+    private bool TryStepFromBoundaryMap(bool next)
+    {
+        if (_boundaryMap is not null)
+        {
+            PresentationDiagnostics native = _player.Presentation.Snapshot();
+            if (_lastPresentationCandidate is not { } settled
+                || settled.PresentId != native.LastSubmitted || settled.PresentId != native.LastConfirmed
+                || settled.SwapChainEpoch != native.SwapChainEpoch)
+            {
+                _lastError = "Frame step is waiting for a confirmed paused frame; try again after presentation settles.";
+                RequestPresentationRecovery();
+                return true;
+            }
+        }
+        if (_seeks.HasInFlight)
+        {
+            _lastError = "Frame step is waiting for the current seek to complete.";
+            return true;
+        }
+
+        PresentationStepTargetKind kind = PresentationCandidateMapper.ResolveStepTarget(
+            _lastPresentationCandidate?.Candidate, _positions.Snapshot(), _positions.PresentationEpoch,
+            _boundaryMap, next, out long targetTicks);
+        if (kind == PresentationStepTargetKind.Unavailable) return false;
+        if (kind == PresentationStepTargetKind.MapEdge)
+        {
+            _lastError = next ? "Already at the last indexed frame." : "Already at the first indexed frame.";
+            return true;
+        }
+
+        if (targetTicks < 0)
+        {
+            _lastError = "The adjacent indexed frame precedes the player's seekable timeline.";
+            return true;
+        }
+
+        _lastError = null;
+        // Seek from the confirmed raw source PTS. Native backward stepping derives frame numbers
+        // from nominal FPS and can return the same frame on irregular VFR sources.
+        PresentedFrameCandidate confirmed = _lastPresentationCandidate!.Candidate;
+        if (_boundaryMap!.TryGetAdjacent(confirmed.Generation.Value, confirmed.StreamIndex,
+            confirmed.OriginalPts!.Value, next, out long targetPts))
+            _mappedStepTarget = targetPts;
+        try { IssueSeek(TimeSpan.FromTicks(targetTicks), accurate: true); }
+        finally { _mappedStepTarget = null; }
+        return true;
     }
 
     public void SetVolume(int volume)
@@ -244,15 +405,22 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
         if (_disposed || _openUnusable) return;
         try
         {
-            _positions.InvalidatePresentation();
-            _player.Stop();
+            lock (_seekGate)
+            {
+                _presentationRecoveryAllowed = false;
+                _presentationRecoveryRequested = false;
+                InvalidatePresentation();
+                _player.Stop();
+                _seeks.Reset();
+            }
         }
         catch (Exception exception)
         {
             _lastError = "Stop failed: " + exception.Message;
+            lock (_seekGate)
+                _seeks.Reset();
         }
 
-        _seeks.Reset();
         SetStatus(PlaybackEngineStatus.Ready);
     }
 
@@ -353,6 +521,19 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
 
             _disposed = true;
             _positions.InvalidatePresentation();
+            _lastPresentationCandidate = null;
+            _boundaryMap = null;
+            _player.Presentation.Confirmed -= OnPresentationConfirmed;
+            _player.Presentation.Invalidated -= OnPresentationInvalidated;
+            _player.PresentationSeekIdle -= OnPresentationSeekIdle;
+            Task? recovery;
+            lock (_seekGate)
+            {
+                _presentationRecoveryRequested = false;
+                recovery = _presentationRecovery;
+                Monitor.PulseAll(_seekGate);
+            }
+            recovery?.GetAwaiter().GetResult();
 
             _advisoryTimer.Dispose();
             _player.SeekCompleted -= OnSeekCompleted;
@@ -410,6 +591,10 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
 
     private void SendSeek(SeekCommand command)
     {
+        _lastPresentationCandidate = null;
+        PublishPresentationOperation();
+        _expectedStep = _mappedStepTarget is { } rawTarget
+            ? (command.Generation.Value, command.Id.Value, rawTarget) : null;
         int milliseconds = (int)Math.Clamp(command.Requested.Value / TimeSpan.TicksPerMillisecond, 0, int.MaxValue);
 
         try
@@ -428,6 +613,144 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
         }
     }
 
+    private void PublishPresentationOperation()
+    {
+        PlaybackPositionSnapshot snapshot = _positions.Snapshot();
+        _player.Presentation.SetOperation(new PresentationOperation(snapshot.Generation.Value,
+            _positions.PresentationEpoch, snapshot.LastRequest?.Id.Value));
+    }
+
+    private void InvalidatePresentation()
+    {
+        lock (_seekGate)
+        {
+            _positions.InvalidatePresentation();
+            _lastPresentationCandidate = null;
+            PublishPresentationOperation();
+        }
+    }
+
+    private void OnPresentationConfirmed(PresentedFrameEvidence evidence)
+    {
+        lock (_seekGate)
+        {
+            if (_disposed || _openUnusable) return;
+            DecodedFrameMetadata frame = evidence.Frame;
+            PresentationOperation operation = evidence.Operation;
+            if (frame.SourceGeneration != operation.SourceGeneration || frame.DecodeEpoch <= 0
+                || frame.StreamIndex < 0 || frame.FrameId < 0
+                || frame.TimeBaseNum <= 0 || frame.TimeBaseDen <= 0)
+                return;
+
+            var candidate = new PresentedFrameCandidate(new SourceGeneration(operation.SourceGeneration),
+                operation.PresentationEpoch, operation.SeekId is { } seekId ? new SeekRequestId(seekId) : null,
+                frame.StreamIndex, frame.FrameId, frame.RawPts,
+                Rational.Create(frame.TimeBaseNum, frame.TimeBaseDen), frame.UiEpochTicks,
+                evidence.NextRawPts, "Experimental DXGI present-ID confirmation; hook acceptance pending.");
+            PlaybackPositionSnapshot snapshot = _positions.Snapshot();
+            if (!PresentationCandidateMapper.IsCurrentOperation(candidate, snapshot, _positions.PresentationEpoch))
+                return;
+
+            PresentedFrameCandidate withBoundary = PresentationCandidateMapper.WithBoundaryMap(candidate, _boundaryMap);
+            PresentationCandidateMapper.TryMap(withBoundary, snapshot, _positions.PresentationEpoch,
+                out PresentationObservation? normalized);
+            if (_expectedStep is { } expected && expected.Generation == operation.SourceGeneration
+                && expected.SeekId == operation.SeekId && frame.RawPts != expected.RawPts)
+            {
+                _lastError = $"Mapped frame step expected source PTS {expected.RawPts}, but confirmed {frame.RawPts}.";
+                normalized = null;
+            }
+            _lastPresentationCandidate = new(candidate, normalized, evidence.SwapChainEpoch,
+                evidence.PresentId, evidence.PresentQpc, evidence.ConfirmQpc);
+            Monitor.PulseAll(_seekGate);
+            // Diagnostic candidates stay separate even when complete. Runtime traffic cannot prove
+            // this hook or authorize exact boundaries before independent acceptance validation.
+        }
+        PresentationCandidateChanged?.Invoke(this, EventArgs.Empty);
+        RaiseStateChanged();
+    }
+
+    private void OnPresentationInvalidated(PresentationInvalidation invalidation)
+    {
+        lock (_seekGate)
+        {
+            if (_disposed || _openUnusable) return;
+            PlaybackPositionSnapshot snapshot = _positions.Snapshot();
+            PresentationOperation operation = invalidation.Operation;
+            if (operation.SourceGeneration != snapshot.Generation.Value
+                || operation.PresentationEpoch != _positions.PresentationEpoch
+                || operation.SeekId != snapshot.LastRequest?.Id.Value)
+                return;
+
+            _positions.InvalidatePresentation();
+            _lastPresentationCandidate = null;
+            PublishPresentationOperation();
+            RequestPresentationRecovery();
+            Monitor.PulseAll(_seekGate);
+        }
+        PresentationCandidateChanged?.Invoke(this, EventArgs.Empty);
+        RaiseStateChanged();
+    }
+
+    private void OnPresentationSeekIdle()
+    {
+        lock (_seekGate)
+            RequestPresentationRecovery();
+    }
+
+    // Called under the adapter gate. Only the worker calls native recovery, after releasing it.
+    private void RequestPresentationRecovery()
+    {
+        if (_disposed || _openUnusable || _sourceOpening || !_presentationRecoveryAllowed
+            || _player.IsPlaying || _seeks.HasInFlight)
+            return;
+        PresentationDiagnostics native = _player.Presentation.Snapshot();
+        if (native.PendingCount > 0) return; // The independent statistics timer still owns confirmation.
+        if (_lastPresentationCandidate is { } confirmed
+            && PresentationCandidateMapper.IsCurrentOperation(confirmed.Candidate, _positions.Snapshot(), _positions.PresentationEpoch)
+            && confirmed.SwapChainEpoch == native.SwapChainEpoch
+            && confirmed.PresentId == native.LastSubmitted && confirmed.PresentId == native.LastConfirmed)
+            return;
+        _presentationRecoveryRequested = true;
+        _presentationRecovery ??= Task.Run(RecoverPresentation);
+    }
+
+    private void RecoverPresentation()
+    {
+        while (true)
+        {
+            PresentationOperation intent;
+            lock (_seekGate)
+            {
+                if (!_presentationRecoveryRequested || _disposed || _openUnusable || _sourceOpening
+                    || !_presentationRecoveryAllowed
+                    || _player.IsPlaying || _seeks.HasInFlight)
+                {
+                    _presentationRecoveryRequested = false;
+                    _presentationRecovery = null;
+                    return;
+                }
+                _presentationRecoveryRequested = false;
+                PlaybackPositionSnapshot snapshot = _positions.Snapshot();
+                intent = new(snapshot.Generation.Value, _positions.PresentationEpoch, snapshot.LastRequest?.Id.Value);
+            }
+
+            try
+            {
+                // Native code rechecks the frozen token and owns lockActions/stepSeekLock. Never
+                // hold _seekGate here: a draining seek callback may need it to finish.
+                _player.TryRefreshPresentation(intent);
+            }
+            catch (Exception exception)
+            {
+                lock (_seekGate)
+                    if (!_disposed) _lastError = "Presentation recovery failed: " + exception.Message;
+            }
+            // A false result waits for the actual PresentationSeekIdle event, with no timer/retry.
+            // A concurrent new request is coalesced into this same owned worker.
+        }
+    }
+
     private void OnSeekCompleted(object? sender, int milliseconds)
     {
         lock (_seekGate)
@@ -439,6 +762,8 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
 
             if (next is not null)
                 SendSeek(next);
+            else if (success)
+                RequestPresentationRecovery();
 
             RaiseStateChanged();
         }

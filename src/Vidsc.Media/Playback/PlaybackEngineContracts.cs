@@ -1,4 +1,5 @@
 using Vidsc.Core.Playback;
+using Vidsc.Core.Navigation;
 
 namespace Vidsc.Media.Playback;
 
@@ -17,6 +18,24 @@ public enum PlaybackEngineStatus
 public sealed record OpenSourceResult(bool Success, string? Error, long DurationTicks)
 {
     public static OpenSourceResult Failed(string error) => new(false, error, 0);
+}
+
+/// <summary>
+/// Diagnostic evidence from the experimental presentation integration. A normalized candidate
+/// remains separate from Positions.ObservedPresentation until the hook's acceptance gate passes.
+/// </summary>
+public sealed record PresentationCandidateDiagnostic(
+    PresentedFrameCandidate Candidate,
+    PresentationObservation? NormalizedObservation,
+    long SwapChainEpoch,
+    uint PresentId,
+    long PresentQpc,
+    long ConfirmQpc);
+
+/// <summary>Optional full-frame boundary evidence supplied independently of playback.</summary>
+public interface IFrameBoundaryMapConsumer
+{
+    void SetBoundaryMap(PresentationBoundaryMap? map);
 }
 
 /// <summary>

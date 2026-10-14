@@ -18,6 +18,13 @@
   },
 
   "playback": {
+    "sourceBuild": {
+      "kind": "vendored-project-reference",
+      "directory": "third_party/FlyleafLib",
+      "upstreamCommit": "0f061769c47d50dfdae5c667435bf6548a0dc121",
+      "informationalVersion": "3.11.11+vidsc.hook.1",
+      "notes": "Local raw-frame metadata and experimental DXGI present-ID confirmation changes. Original NuGet package identity below records the upstream baseline. Exact editing remains disabled pending acceptance."
+    },
     "package": {
       "id": "FlyleafLib",
       "version": "3.11.11",

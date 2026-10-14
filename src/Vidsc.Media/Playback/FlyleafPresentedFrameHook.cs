@@ -3,10 +3,10 @@ using Vidsc.Core.Playback;
 namespace Vidsc.Media.Playback;
 
 /// <summary>
-/// Documented assessment of the presented-frame hook in the pinned Flyleaf version.
+/// Trust assessment of the baseline and the experimental patch against pinned Flyleaf source.
 /// </summary>
 /// <remarks>
-/// This is a source-inspection result, not a runtime guess. Evidence was read from the Flyleaf
+/// The baseline findings below are a source-inspection result, not a runtime guess. Evidence was read from the Flyleaf
 /// repository at the commit recorded in <see cref="PinnedCommit"/>:
 ///
 /// <list type="bullet">
@@ -63,7 +63,8 @@ public static class FlyleafPresentedFrameHook
     public const string EvidenceSummary =
         "FlyleafLib " + PinnedVersion + " (commit " + PinnedCommit + "): SeekCompleted echoes the REQUESTED ms "
         + "(Player.Playback.cs, seek loop) and Player.CurTime is written by both Seek() and UpdateCurTime() "
-        + "(Player.cs / Player.Screamers.VASD.cs). Renderer.PresentPlay and VideoCache.RendererFrame are internal "
-        + "and no Renderer event is published, so no public presented-frame PTS hook exists. "
-        + "Player.CurTime is recorded as ADVISORY only; exact In/Out stays disabled.";
+        + "(Player.cs / Player.Screamers.VASD.cs). The experimental source patch publishes typed "
+        + "DXGI present-ID candidates, separately from trusted tracker observations. Original PTS, "
+        + "source epoch, operation correlation, presentation end and independent visible-frame validation "
+        + "must pass acceptance before trust changes. Player.CurTime remains ADVISORY; exact In/Out stays disabled.";
 }

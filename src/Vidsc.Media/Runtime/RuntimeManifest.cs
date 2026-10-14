@@ -15,7 +15,10 @@ public sealed record RuntimeManifest(
     string? FfmpegVersion,
     string? FfprobeVersion,
     string? FlyleafVersion,
-    IReadOnlyList<RuntimeManifestFile> Files);
+    IReadOnlyList<RuntimeManifestFile> Files)
+{
+    public string? FlyleafManagedBuild { get; init; }
+}
 
 /// <summary>Reads the generated manifest so the application can show the exact delivered bundle.</summary>
 public static class RuntimeManifestReader
@@ -55,7 +58,11 @@ public static class RuntimeManifestReader
                 GetString(root, "ffmpegVersion"),
                 GetString(root, "ffprobeVersion"),
                 GetString(root, "flyleafVersion"),
-                files);
+                files)
+            {
+                FlyleafManagedBuild = root.TryGetProperty("flyleafManagedBuild", out JsonElement build)
+                    ? GetString(build, "informationalVersion") : null
+            };
 
             return true;
         }

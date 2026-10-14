@@ -17,7 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="FlyleafLib" />
+    <ProjectReference Include="..\..\third_party\FlyleafLib\FlyleafLib\FlyleafLib.csproj" />
   </ItemGroup>
 
   <ItemGroup>

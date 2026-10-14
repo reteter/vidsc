@@ -538,6 +538,17 @@ function New-ObservedManifest {
     $ffmpegVersion = ((Invoke-Capture -Executable (Join-Path $Root 'tools/ffmpeg/ffmpeg.exe') -Arguments @('-hide_banner', '-version')).Output -split "`n")[0]
     $ffprobeVersion = ((Invoke-Capture -Executable (Join-Path $Root 'tools/ffmpeg/ffprobe.exe') -Arguments @('-hide_banner', '-version')).Output -split "`n")[0]
 
+    $managedPlayback = [System.Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $Root 'FlyleafLib.dll'))
+    if ($managedPlayback.ProductVersion -ne $pinned.playback.sourceBuild.informationalVersion) {
+        throw "The playback assembly identity does not match the pinned local source build: $($managedPlayback.ProductVersion)"
+    }
+    $vendorRoot = Join-Path $ProjectRoot $pinned.playback.sourceBuild.directory
+    $sourceFiles = @(Get-ChildItem -LiteralPath $vendorRoot -Recurse -File | Where-Object {
+        $_.FullName -notmatch '[\\/](bin|obj)[\\/]' -and $_.Extension -in @('.cs', '.xaml', '.csproj', '.props', '.hlsl')
+    } | Sort-Object FullName | ForEach-Object {
+        [ordered]@{ path = $_.FullName.Substring($vendorRoot.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+    })
+
     $document = [ordered]@{
         schemaVersion      = 1
         generatedUtc       = (Get-Date).ToUniversalTime().ToString('O')
@@ -547,6 +558,11 @@ function New-ObservedManifest {
         sdkVersion         = $sdkVersion
         desktopRuntime     = $desktopRuntime
         flyleafVersion     = $pinned.playback.package.version
+        flyleafManagedBuild = [ordered]@{
+            informationalVersion = $managedPlayback.ProductVersion
+            upstreamCommit = $pinned.playback.sourceBuild.upstreamCommit
+            sourceFiles = $sourceFiles
+        }
         flyleafNativeSha   = [ordered]@{
             archive = $pinned.playback.native.sha256
             source  = $pinned.playback.native.releaseUrl
