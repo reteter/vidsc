@@ -47,6 +47,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly FfmpegCli? _ffmpeg;
     private readonly SceneWorker? _sceneWorker;
+    private readonly InspectionEvidenceWorker? _evidenceWorker;
     private readonly Func<string, CancellationToken, Task<SourceMediaInfo?>>? _probeOverride;
     private readonly Func<string, MediaStreamInfo, long, bool, CancellationToken, Task<NavigationMap>>? _navigationOverride;
     private readonly Func<string, ProgressiveInspectionRequest, CancellationToken, Task<ProgressiveInspectionSnapshot>>? _progressiveOverride;
@@ -79,6 +80,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private NavigationMap? _navigationMap;
     private ProgressiveInspectionSnapshot? _progressiveInspection;
     private IReadOnlyList<PacketAccessPointEvidence> _accessPoints = Array.Empty<PacketAccessPointEvidence>();
+    private IndependentReconstructionEvidence? _reconstructionEvidence;
     private IReadOnlyList<long> _progressiveKeyframeTicks = Array.Empty<long>();
     private string _inspectionSummary = "Neighborhood not inspected. Analysis is opt-in.";
     private CancellationTokenSource? _indexCancellation;
@@ -147,6 +149,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         else
             SceneReason = sceneReason ?? "Scene runtime unavailable.";
 
+        InspectionEvidenceWorker.TryCreate(toolset, out _evidenceWorker, out _);
+
         _engine.StateChanged += OnEngineStateChanged;
         if (_engine is FlyleafPlaybackEngine playback)
             playback.PlaybackRestartRequested += OnPlaybackRestartRequested;
@@ -164,6 +168,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         BuildKeyframesCommand = new RelayCommand(() => _mediaJobTask = BuildNavigationAsync(false), CanBuildNavigation);
         BuildFrameIndexCommand = new RelayCommand(() => _mediaJobTask = BuildNavigationAsync(true), CanBuildNavigation);
         InspectNeighborhoodCommand = new RelayCommand(() => _mediaJobTask = InspectNeighborhoodAsync(), CanBuildNavigation);
+        VerifyAccessPointCommand = new RelayCommand(() => _mediaJobTask = VerifyAccessPointAsync(), CanVerifyAccessPoint);
         CancelIndexCommand = new RelayCommand(() => _indexCancellation?.Cancel(), () => _indexCancellation is not null);
         RefreshToolsetText();
         RefreshManifestText();
@@ -173,10 +178,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand BuildKeyframesCommand { get; }
     public RelayCommand BuildFrameIndexCommand { get; }
     public RelayCommand InspectNeighborhoodCommand { get; }
+    public RelayCommand VerifyAccessPointCommand { get; }
     public RelayCommand CancelIndexCommand { get; }
     public string InspectionSummary { get => _inspectionSummary; private set => SetProperty(ref _inspectionSummary, value); }
     public ProgressiveInspectionSnapshot? ProgressiveInspection => _progressiveInspection;
     public IReadOnlyList<PacketAccessPointEvidence> AccessPoints => _accessPoints;
+    public IndependentReconstructionEvidence? ReconstructionEvidence => _reconstructionEvidence;
     public string InspectionCapabilities
     {
         get
@@ -186,7 +193,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             string timing = video.TimeBase is { IsPositive: true } ? "Rational source timing available." : "Exact timing unavailable: missing time base.";
             string codec = video.CodecName is "h264" or "hevc" ? "AVC/HEVC access-point classification available; dependency safety requires additional evidence." : "Access-point dependency classification unavailable for this codec.";
             string frames = _navigationMap?.HasFrameIndex == true ? "Complete presentation frame map available; EOF requires separate verification." : "Exact boundaries require a complete verified frame map; local traversals do not establish continuity.";
-            return $"{timing} {codec} {frames}";
+            string reconstruction = _reconstructionEvidence is { } evidence
+                ? $"Independent reconstruction observed at raw PTS {evidence.FirstPts} through {evidence.LastPts} inclusive ({evidence.FrameCount} frames, {evidence.PacketCount} consecutive packets). Leading pictures are excluded; splice/export safety is unknown."
+                : "Independent reconstruction unavailable. Verification supports bounded AVC/HEVC sources up to 16 MiB; inspect a neighborhood first.";
+            return $"{timing} {codec} {frames} {reconstruction}";
         }
     }
     public IReadOnlyList<long> KeyframeTicks => _navigationMap?.KeyframeTicks ?? _progressiveKeyframeTicks;
@@ -212,6 +222,56 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     private bool CanBuildNavigation() => CanRunMediaJob() && _mediaInfo?.PrimaryVideo is not null;
+
+    private bool CanVerifyAccessPoint() => CanBuildNavigation() && _evidenceWorker is not null
+        && _metadataIdentity is { Size: > 0 and <= 16 * 1024 * 1024 }
+        && _mediaInfo?.PrimaryVideo is { CodecName: "h264" or "hevc", TimeBase.IsPositive: true }
+        && _accessPoints.Any(p => p.Pts.HasValue && p.Evidence.IsCandidate);
+
+    private async Task VerifyAccessPointAsync()
+    {
+        if (!CanVerifyAccessPoint() || !TryBeginMediaJob()) return;
+        long opened = _openToken;
+        long seekVersion = Interlocked.Read(ref _navigationSeekVersion);
+        long engineGeneration = _engine.Positions.Generation.Value;
+        var cancellation = _mediaJobCancellation!;
+        _indexCancellation = cancellation;
+        CancelIndexCommand.RaiseCanExecuteChanged();
+        InspectionSummary = "Verifying the last inspected access point with a fresh decoder…";
+        try
+        {
+            string path = _sourcePath!;
+            var video = _mediaInfo!.PrimaryVideo!;
+            var source = new ProgressiveSourceIdentity(_metadataIdentity!.IdentityKey, engineGeneration,
+                video.Index, video.TimeBase!.Value, _mediaInfo.ContainerStartTicks ?? 0);
+            long pts = _accessPoints.First(p => p.Pts.HasValue && p.Evidence.IsCandidate).Pts!.Value;
+            var request = new InspectionEvidenceRequest(Guid.NewGuid().ToString("N"), source, video.CodecName, CandidatePts: pts);
+            // Hashing and native startup stay off the dispatcher; process ownership still uses the shared job slot.
+            var result = await Task.Run(() => _evidenceWorker!.RunAsync(path, request, cancellation.Token, ObserveMediaProcess), cancellation.Token);
+            if (opened != _openToken || engineGeneration != _engine.Positions.Generation.Value
+                || seekVersion != Interlocked.Read(ref _navigationSeekVersion) || cancellation.IsCancellationRequested) return;
+            if (!result.Success || result.Reconstruction is not { } evidence || result.Navigation is not { } map)
+                throw new InvalidDataException(result.Error ?? "Independent reconstruction unavailable.");
+            if (evidence.Source != source) throw new InvalidDataException("Reconstruction identity differs from this source.");
+            _reconstructionEvidence = evidence;
+            _navigationMap = map;
+            if (_engine is IFrameBoundaryMapConsumer consumer)
+                consumer.SetBoundaryMap(new PresentationBoundaryMap(engineGeneration, video.Index, map));
+            InspectionSummary = $"Fresh decoder matched {evidence.FrameCount} frames at raw PTS {evidence.FirstPts} through {evidence.LastPts}, using {evidence.PacketCount} consecutive packets. Leading packet/frame observations: {evidence.LeadingPacketCount}/{evidence.LeadingFrameCount}. EOF and splice/export safety remain unverified.";
+            OnPropertyChanged(nameof(ReconstructionEvidence));
+            OnPropertyChanged(nameof(InspectionCapabilities));
+            OnPropertyChanged(nameof(KeyframeTicks));
+            ReformatDesiredTime();
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            _mediaJobStuck = true;
+            InspectionSummary = $"Verifier process {exception.ProcessId} exit unconfirmed; media jobs remain blocked.";
+        }
+        catch (OperationCanceledException) { if (opened == _openToken) InspectionSummary = "Verification cancelled; no new evidence published."; }
+        catch (Exception exception) { if (opened == _openToken) InspectionSummary = "Verification unavailable: " + exception.Message; }
+        finally { _indexCancellation = null; EndMediaJob(); CancelIndexCommand.RaiseCanExecuteChanged(); }
+    }
 
     private async Task InspectNeighborhoodAsync()
     {
@@ -547,9 +607,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _navigationMap = null;
         _progressiveInspection = null;
         _accessPoints = Array.Empty<PacketAccessPointEvidence>();
+        _reconstructionEvidence = null;
         _progressiveKeyframeTicks = Array.Empty<long>();
         InspectionSummary = "Neighborhood not inspected. Analysis is opt-in.";
         OnPropertyChanged(nameof(ProgressiveInspection));
+        OnPropertyChanged(nameof(AccessPoints));
+        OnPropertyChanged(nameof(ReconstructionEvidence));
         OnPropertyChanged(nameof(InspectionCapabilities));
         _durationTicks = 0;
         _navigationTarget = 0;
@@ -748,7 +811,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         LastError = null;
 
-        if (_navigationMap?.HasFrameIndex == true && TimeMode != NavigationTimeMode.FrameIndex)
+        if (_navigationMap?.HasFrameIndex == true && TimeMode != NavigationTimeMode.FrameIndex && _mediaInfo?.PrimaryVideo is not null)
         {
             var resolver = new FrameBoundaryResolver(new PresentationBoundaryMap(
                 _engine.Positions.Generation.Value, _mediaInfo!.PrimaryVideo!.Index, _navigationMap));
@@ -1175,9 +1238,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _navigationMap = null;
             _progressiveInspection = null;
             _accessPoints = Array.Empty<PacketAccessPointEvidence>();
+            _reconstructionEvidence = null;
             _progressiveKeyframeTicks = Array.Empty<long>();
             InspectionSummary = "No source opened.";
             OnPropertyChanged(nameof(ProgressiveInspection));
+            OnPropertyChanged(nameof(AccessPoints));
+            OnPropertyChanged(nameof(ReconstructionEvidence));
             OnPropertyChanged(nameof(InspectionCapabilities));
             _durationTicks = 0;
             _navigationTarget = 0;
@@ -1471,6 +1537,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         BuildKeyframesCommand?.RaiseCanExecuteChanged();
         BuildFrameIndexCommand?.RaiseCanExecuteChanged();
         InspectNeighborhoodCommand?.RaiseCanExecuteChanged();
+        VerifyAccessPointCommand?.RaiseCanExecuteChanged();
     }
 
     private static string FirstLine(string text)

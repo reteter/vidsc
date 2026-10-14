@@ -51,10 +51,16 @@ public sealed class PresentationBoundaryMapTests
         var navigation = new NavigationMap(Rational.Create(1, 24000), 0,
             [0, 1001], [], terminalEndPts: 2002, terminalEndProvenance: "fixture metadata");
         Assert.False(new PresentationBoundaryMap(1, 0, navigation).TryResolve(1, 0, 1001, out _));
-        var accepted = new PresentationBoundaryMap(1, 0, navigation, terminalEndVerified: true);
+        var source = new ProgressiveSourceIdentity("boundary-fixture", 1, 0, navigation.TimeBase, 0);
+        var reference = new IndependentTerminalReference(source, "boundary-v1", "Authored test frame schedule", [0, 1001], 2002);
+        Assert.True(TerminalEndQualification.TryQualify(source, navigation, reference, out var qualification, out _));
+        var accepted = new PresentationBoundaryMap(source, navigation, qualification!);
         Assert.True(accepted.TryResolve(1, 0, 1001, out long end));
         Assert.Equal(2002, end);
-        Assert.Equal("fixture metadata", accepted.TerminalEndProvenance);
+        Assert.Equal("Authored test frame schedule", accepted.TerminalEndProvenance);
+        Assert.Throws<ArgumentException>(() => new PresentationBoundaryMap(source with { Generation = 2 }, navigation, qualification!));
+        Assert.Throws<ArgumentException>(() => new PresentationBoundaryMap(source,
+            new NavigationMap(navigation.TimeBase, 0, [0, 1001], [], terminalEndPts: 2003), qualification!));
     }
 
     [Fact]
@@ -65,7 +71,9 @@ public sealed class PresentationBoundaryMapTests
         Assert.Throws<ArgumentException>(() => new PresentationBoundaryMap(1, 0, duplicate));
         Assert.Throws<ArgumentException>(() => new PresentationBoundaryMap(1, 0, missing));
         var complete = new NavigationMap(Rational.Create(1, 1000), 0, [1, 2], []);
-        Assert.Throws<ArgumentException>(() => new PresentationBoundaryMap(1, 0, complete, true));
+        var source = new ProgressiveSourceIdentity("incomplete-fixture", 1, 0, complete.TimeBase, 0);
+        Assert.False(TerminalEndQualification.TryQualify(source, complete,
+            new IndependentTerminalReference(source, "incomplete-v1", "Authored schedule", [1, 2], 3), out _, out _));
     }
 
     [Theory]

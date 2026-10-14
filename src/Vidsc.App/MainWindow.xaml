@@ -59,16 +59,17 @@
                    ToolTip="Use the selected format: milliseconds, nominal HH:MM:SS:FF, or zero-based file frame index. Enter seeks the target; displayed frame remains advisory." />
         </DockPanel>
 
-        <StackPanel Orientation="Horizontal" Margin="0,6,0,4">
+        <WrapPanel Margin="0,6,0,4">
           <Button Content="−" Width="32" Click="OnZoomOut" />
           <Button Content="+" Width="32" Click="OnZoomIn" />
           <Button Content="Fit" Width="48" Click="OnTimelineFit" />
           <Button Content="Center playhead" Width="110" Click="OnTimelineCenter" />
           <Button Content="Inspect neighborhood" Margin="12,0,4,0" Command="{Binding InspectNeighborhoodCommand}" />
+          <Button Content="Verify inspected access point" Margin="0,0,4,0" Command="{Binding VerifyAccessPointCommand}" ToolTip="Compare a fresh decoder with the full reference for the last inspected candidate. Bounded AVC/HEVC sources up to 16 MiB; no splice or EOF certification." />
           <Button Content="Build keyframes" Margin="0,0,4,0" Command="{Binding BuildKeyframesCommand}" />
           <Button Content="Build frame index" Command="{Binding BuildFrameIndexCommand}" />
           <Button Content="Cancel index" Margin="4,0" Command="{Binding CancelIndexCommand}" />
-        </StackPanel>
+        </WrapPanel>
         <local:TimelineControl x:Name="Timeline" AutomationProperties.AutomationId="NavigationTimeline" AutomationProperties.Name="Video navigation timeline" PreviewMouseWheel="OnNavigationWheel" Duration="{Binding SliderMaximumTicks}" Position="{Binding DesiredSliderTicks}" Markers="{Binding KeyframeTicks}" />
         <TextBlock Text="Click/drag: seek • Shift-drag: pan • ↑ / wheel up: next keyframe • ↓ / wheel down: previous • ← / →: frame" Foreground="#9FB3C8" />
         <TextBlock Text="Navigation shortcuts work on the video surface and timeline. Text entry, rotation and volume keep their own controls." Foreground="#9FB3C8" />

@@ -88,8 +88,8 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
                 || !navigation.FramePts.SequenceEqual(frames.Select(f => f.GetProperty("pts").GetInt64()))
                 || navigation.TerminalEndPts != frames[^1].GetProperty("end").GetInt64())
                 throw new InvalidOperationException("Complete decoded file scan differs from mathematical frame/end oracle.");
-            flyleaf.SetBoundaryMap(new PresentationBoundaryMap(engine.Positions.Generation.Value, 0,
-                navigation, terminalEndVerified: true));
+            flyleaf.SetBoundaryMap(QualifyFixtureBoundaryMap(options.MediaPaths[0], fixture, navigation,
+                engine.Positions.Generation.Value));
             boundaryEvidence = new { navigation.FrameCount, navigation.TerminalEndPts,
                 navigation.TerminalEndProvenance, terminalEndVerified = true,
                 provenance = "complete independent decoded file map checked against mathematical fixture oracle" };
@@ -163,7 +163,8 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
                         if (!navigation.HasFrameIndex || !navigation.FramePts.SequenceEqual(frames.Select(f => f.GetProperty("pts").GetInt64()))
                             || navigation.TerminalEndPts != frames[^1].GetProperty("end").GetInt64())
                             throw new InvalidOperationException("Replacement complete map differs from raw oracle.");
-                        flyleaf.SetBoundaryMap(new PresentationBoundaryMap(engine.Positions.Generation.Value, 0, navigation, true));
+                        flyleaf.SetBoundaryMap(QualifyFixtureBoundaryMap(path, fixture, navigation,
+                            engine.Positions.Generation.Value));
                         await CheckAsync("source-switch-confirm", 7, () => engine.SeekExact(TimeSpan.FromTicks(
                             frames[7].GetProperty("uiPts").GetInt64() * TimeSpan.TicksPerSecond / 24000)));
                     }
@@ -442,6 +443,22 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
                 ? "passed for selected fixture frames using independently verified file boundary map" : "failed or pending",
             checks = _checks, failures = _failures }, new JsonSerializerOptions { WriteIndented = true });
         return _failures.Count == 0 && _checks.Count == expectedCheckCount ? 0 : 1;
+    }
+
+    private static PresentationBoundaryMap QualifyFixtureBoundaryMap(string path, JsonElement fixture,
+        NavigationMap navigation, long generation)
+    {
+        var source = new ProgressiveSourceIdentity(InspectionSourceIdentity.Capture(path).IdentityKey,
+            generation, 0, navigation.TimeBase, navigation.TimelineOriginTicks);
+        var frames = fixture.GetProperty("frames").EnumerateArray().ToArray();
+        // Expectations come from the preexisting mathematical fixture manifest, never the measured scan.
+        var reference = new IndependentTerminalReference(source,
+            "presentation-fixture-" + fixture.GetProperty("name").GetString(),
+            "Mathematical fixture manifest frame schedule and final presentation end",
+            frames.Select(frame => frame.GetProperty("pts").GetInt64()), frames[^1].GetProperty("end").GetInt64());
+        if (!TerminalEndQualification.TryQualify(source, navigation, reference, out var qualification, out var reason))
+            throw new InvalidOperationException(reason);
+        return new PresentationBoundaryMap(source, navigation, qualification!);
     }
 
     private static bool Matches(RationalTime actual, long expected) =>

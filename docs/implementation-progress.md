@@ -7,6 +7,16 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M2 terminal and reconstruction evidence — 14 October 2026
+
+After squash-merged PR #27, #26 adds typed, independently referenced terminal qualification and
+bounded fresh-decoder reconstruction evidence. Nonzero AVC IDR, HEVC Main10 CRA/RASL and HEVC
+Main10 IDR_N_LP each match 36 retained frames; authored CFR and offset/VFR EOF references pass.
+Missing context, stale identity, corruption and resource-limit controls fail closed. Generic EOF,
+actual RADL reconstruction and export safety remain unknown. See the
+[capability matrix and acceptance record](validation/2026-10-14-m2-evidence.md).
+Deferred M1 work and scene-seek task #28 were not resumed.
+
 Snapshot at issue-tracking migration (14 October 2026): **M1 presentation sub-gate accepted; full M1 OPEN** for real-media B1–B6 and
 bounded visual/manual acceptance. Latest unit tests: **241/241**. The final visible runs pass
 **140/140** across five fixtures and **19/19** lifecycle checks plus lifecycle actions; earlier
