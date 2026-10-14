@@ -1,5 +1,13 @@
 # vidsc
 
+## Session start
+
+1. Work only in `D:\code\codex\vidsc` or its owned worktrees, with origin `https://github.com/reteter/vidsc.git`. The depot's `projects/vidsc` copy is archival. Communicate in Polish; repository artifacts and GitHub content use English.
+2. Read `docs/implementation-progress.md` and `docs/ci.md`. Inspect `git status`, current branch/upstream, recent commits and worktrees before changing anything; preserve existing work. Fetch origin before selecting a base or assessing branch freshness.
+3. Read the selected issue and comments plus any existing PR for that work. If no issue is selected, inspect open issues and current PRs; choose only eligible work within the user's scope. GitHub holds current task status; the progress ledger holds historical evidence. If all remaining work is deferred/blocked, report that instead of starting a later milestone.
+4. Read `docs/github-workflow.md` before branch/PR operations. Read only relevant plan sections and validation records for the selected task; do not repeat full research or accepted test suites without a concrete reason. This file's dated technical snapshot is context, not a substitute for current issues/code/evidence.
+5. Briefly report the current state and intended next step, then continue authorized work. A generic request to continue does not resume long measurements/active-window tests, expand scope beyond M1 and its retrospective, or approve a merge. Explicit later user instructions can change these constraints.
+
 ## Purpose and scope
 
 Windows x64 video navigator and trimmer: **C# / .NET 10 / WPF / Flyleaf**, separate FFmpeg/ffprobe tools, local PySceneDetect/PyAV worker. Main inputs: MP4/MKV/MOV with AVC/HEVC, 720p/1080p, portrait variants and long clips.
@@ -17,7 +25,7 @@ Required: **stream copy** and **accurate cuts with re-encoded boundaries/copied 
 - The scene runtime is bundled as a **relocatable embeddable CPython** (`scene/python`, built by `tools/Build-Scene-Runtime.ps1` from the official embeddable distribution plus project-local wheels; no `pyvenv.cfg`, no host-Python dependency). A legacy host-Python `venv` remains a local-development fallback; using it does not satisfy the self-contained runtime gate.
 - Automation: `Vidsc.App.exe --smoke-test --media <fixture> --report <path>` runs a scripted open/play/seek/step/dispose sequence. The smoke **fails** (not warns) on a missing render surface, no rendered-frame progress, a missed burst completion, a pending request that does not clear, or unexpected exact-edit eligibility, and records the loaded Flyleaf native modules and the CLI tool set. Current default Release verification passed; log: `artifacts/m1-qualified-release-build.log`. B6 clean-location delivery remains separate and pending.
 
-Read [the implementation plan](docs/implementation-plan.md) first. [Research](docs/research/2026-10-14-video-architecture.md) contains sources and test-media paths/properties (section 18). [Review](docs/implementation-plan-review.md) explains the corrections; its line references describe the original plan. [M0+M1 validation record](docs/validation/2026-10-14-m0-m1.md) lists exact dependency identities, tested commands, evidence and pending gates.
+Read relevant sections of [the implementation plan](docs/implementation-plan.md) before changing the affected behavior. [Research](docs/research/2026-10-14-video-architecture.md) contains sources and test-media paths/properties (section 18). [Review](docs/implementation-plan-review.md) explains the corrections; its line references describe the original plan. [M0+M1 validation record](docs/validation/2026-10-14-m0-m1.md) lists exact dependency identities, tested commands, evidence and pending gates.
 
 Remaining M1 gates are the plan's real-media B1–B6 scenarios and bounded visual/manual checks (dimensions/aspect, rotation/portrait, DPI, fullscreen, popups and focus). The presentation hook sub-gate is accepted; do not infer exact editing or safe cuts from that acceptance.
 
@@ -59,6 +67,8 @@ Split: `Vidsc.App` (WPF), `Vidsc.Core` (contracts), `Vidsc.Media` (operations). 
 ## Working style
 
 Communicate in **Polish**; code, comments, documents and commits in **English**. Keep changes simple; run minimal relevant verification and report gaps. Keep this file concise: details/evidence belong in `docs`, generated media/logs in ignored artifacts.
+
+Act as the orchestrator: own scope, integration, verification, issue updates and delivery. Delegate only when independent subtasks justify it; small documentation edits or simple fixes need no subagents. Use built-in subagents with `gpt-6.1-sol`: low effort for implementation/tests, high effort for design/review. Assign explicit file/responsibility ownership, pass applicable constraints, and tell agents to preserve others' work. Do not run heavy checks concurrently in one checkout. If the requested model is unavailable, disclose it before substituting. Do not use `opencode-delegate` unless the user explicitly requests it.
 
 ## GitHub work tracking
 

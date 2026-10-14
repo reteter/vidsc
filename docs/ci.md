@@ -10,7 +10,7 @@ The script resolves the project root from its own location, so it also works whe
 
 Each invocation keeps a unique `artifacts/ci/<run>/` directory containing command logs, the build binary log, transcript, failure details and TRX results when tests execute. The workflow uploads this directory even after a failed check; stages that did not run have no results. Logs are retained for 14 days. Runs have a 25-minute timeout, superseded runs on the same branch are cancelled, and the token has read-only repository contents access. No dependency cache or lock-file policy is introduced.
 
-This workflow becomes active when vidsc is the repository root; GitHub does not discover this nested workflow while it remains under `projects/vidsc` in the depot. Copy the whole project tree, including `.github`, without adding depot-relative paths to the workflow.
+This workflow is active in the standalone vidsc repository. The former `projects/vidsc` depot copy is archival; do not run or modify CI there or add depot-relative paths.
 
 A green CI run establishes compilation, unit checks and promotion rollback behavior. It does not establish a runnable Release bundle, native dependency packaging, presented-frame correctness, B1–B6 performance/resource acceptance or M1 completion. Those existing Windows/native checks remain separate and deferred in CI. `tools/Build-Release.ps1` and `run.bat` retain their existing build, bundle and launch roles.
 

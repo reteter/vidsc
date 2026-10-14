@@ -41,7 +41,11 @@ Start from the relevant GitHub issue and keep its status, dependencies and evide
 Commit each significant verified increment with `Refs #N` on a `codex/` branch. The user now
 authorizes ordinary feature-branch pushes and PR creation/maintenance; only the user decides merge.
 See [#22](https://github.com/reteter/vidsc/issues/22) and [the workflow](github-workflow.md).
-Keep `opencode-delegate` unused. Delegation is not automatic. GitHub connector operations are
+Use built-in subagents when independent work warrants delegation: `gpt-6.1-sol`, low effort for
+implementation/tests and high effort for design/review. The orchestrator owns integration and
+verification; small tasks need no delegation. Use `opencode-delegate` only on explicit user request.
+The session-start checklist in AGENTS.md and [continuation guide](session-start.md) define a compact
+restart path without full research or implicit resumption of deferred tests. GitHub connector operations are
 preferred where supported; gh remains the CLI fallback. This documentation increment uses local
 diff/link checks and hosted CI, without resuming host tests.
 The same workflow issue also clarifies documentation ownership: task-related documentation stays
