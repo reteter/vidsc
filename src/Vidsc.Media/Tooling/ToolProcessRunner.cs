@@ -52,10 +52,13 @@ public static class ToolProcessRunner
         IReadOnlyList<string> arguments,
         TimeSpan timeout,
         CancellationToken cancellationToken,
-        Action<ToolProcessIdentity>? processStarted = null)
+        Action<ToolProcessIdentity>? processStarted = null,
+        int maxCapturedCharacters = MaxCapturedCharacters)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentNullException.ThrowIfNull(arguments);
+        if (maxCapturedCharacters is < 1 or > 8 * 1024 * 1024)
+            throw new ArgumentOutOfRangeException(nameof(maxCapturedCharacters));
         cancellationToken.ThrowIfCancellationRequested();
 
         var startInfo = new ProcessStartInfo
@@ -84,8 +87,8 @@ public static class ToolProcessRunner
             return Failed(executablePath, arguments, exception.Message, stopwatch.Elapsed);
         }
 
-        Task<string> stdoutTask = ReadBoundedAsync(process.StandardOutput, cancellationToken);
-        Task<string> stderrTask = ReadBoundedAsync(process.StandardError, cancellationToken);
+        Task<string> stdoutTask = ReadBoundedAsync(process.StandardOutput, cancellationToken, maxCapturedCharacters);
+        Task<string> stderrTask = ReadBoundedAsync(process.StandardError, cancellationToken, MaxCapturedCharacters);
 
         bool timedOut = false;
         bool cancelled = false;
@@ -144,7 +147,7 @@ public static class ToolProcessRunner
             StartupError = error,
         };
 
-    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken)
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken, int limit)
     {
         var buffer = new char[8192];
         var builder = new System.Text.StringBuilder();
@@ -165,8 +168,8 @@ public static class ToolProcessRunner
             if (read == 0)
                 break;
 
-            if (builder.Length < MaxCapturedCharacters)
-                builder.Append(buffer, 0, Math.Min(read, MaxCapturedCharacters - builder.Length));
+            if (builder.Length < limit)
+                builder.Append(buffer, 0, Math.Min(read, limit - builder.Length));
             else
                 truncated = true;
         }

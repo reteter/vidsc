@@ -1,6 +1,7 @@
 using System.Text.Json;
 
 using Vidsc.Media.Tooling;
+using Vidsc.Media.Inspection;
 
 namespace Vidsc.Media.Scene;
 
@@ -10,7 +11,17 @@ public sealed record SceneProposal(
     int? StartFrame,
     int? EndFrame,
     double StartSeconds,
-    double EndSeconds);
+    double EndSeconds)
+{
+    public long? StartPts { get; init; }
+    public long? EndPts { get; init; }
+    public int? TimeBaseNumerator { get; init; }
+    public int? TimeBaseDenominator { get; init; }
+    public bool EndIsPresentationBoundary { get; init; }
+}
+
+public sealed record SceneJobRequest(string JobId, string SourceIdentity, long Generation = 0,
+    int StreamIndex = 0, double SourceOriginSeconds = 0, double Threshold = 27, int MinSceneLenFrames = 15);
 
 /// <summary>Result of a packaged scene-detection job.</summary>
 public sealed record SceneJobResult(
@@ -26,6 +37,8 @@ public sealed record SceneJobResult(
     ToolRunResult? Process,
     string? RawJson)
 {
+    public JsonElement? Metadata { get; init; }
+    public string? CacheIdentity { get; init; }
     public string Describe()
     {
         if (Process is { Started: false })
@@ -92,9 +105,19 @@ public sealed class SceneWorker
         double durationSeconds,
         string detector,
         CancellationToken cancellationToken,
-        TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null)
+        TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null,
+        SceneJobRequest? request = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
+        using var sourceGuard = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
+        InspectionSourceIdentity sourceIdentity = InspectionSourceIdentity.Capture(source);
+        request ??= new SceneJobRequest(Guid.NewGuid().ToString("N"), sourceIdentity.IdentityKey);
+        if (request.SourceIdentity != sourceIdentity.IdentityKey)
+            return new SceneJobResult(false, "Source identity is stale.", source, null, null, null, null, null, [], null, null);
+        if (!double.IsFinite(startSeconds) || startSeconds < 0 || !double.IsFinite(durationSeconds) || durationSeconds < 0
+            || !double.IsFinite(request.SourceOriginSeconds) || !double.IsFinite(request.Threshold)
+            || request.MinSceneLenFrames < 1 || request.StreamIndex < 0 || detector is not ("content" or "adaptive"))
+            throw new ArgumentException("Invalid scene request.");
 
         string reportPath = Path.Combine(
             Path.GetTempPath(),
@@ -109,8 +132,12 @@ public sealed class SceneWorker
             "--input", source,
             "--output", reportPath,
             "--detector", detector,
-            "--start", startSeconds.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
-            "--duration", durationSeconds.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
+            "--job-id", request.JobId, "--source-id", request.SourceIdentity,
+            "--generation", request.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--stream", request.StreamIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--origin", Number(request.SourceOriginSeconds), "--threshold", Number(request.Threshold),
+            "--min-scene-len", request.MinSceneLenFrames.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--start", Number(startSeconds), "--duration", Number(durationSeconds),
         ];
 
         ToolRunResult run = await ToolProcessRunner
@@ -123,6 +150,11 @@ public sealed class SceneWorker
         string? json = null;
         if (File.Exists(reportPath))
         {
+            if (new FileInfo(reportPath).Length > 4 * 1024 * 1024)
+            {
+                TryDelete(reportPath);
+                return new SceneJobResult(false, "Scene report exceeds the 4 MiB limit.", source, null, null, null, null, null, [], run, null);
+            }
             json = await File.ReadAllTextAsync(reportPath, CancellationToken.None).ConfigureAwait(false);
             TryDelete(reportPath);
         }
@@ -136,45 +168,102 @@ public sealed class SceneWorker
             return new SceneJobResult(false, "The scene job produced no JSON report. " + run.Describe(), source, null, null, null, null, null, Array.Empty<SceneProposal>(), run, null);
         }
 
-        return Parse(source, json, run);
+        if (!sourceIdentity.MatchesCurrentFile())
+            return new SceneJobResult(false, "Source changed during scene analysis.", source, null, null, null, null, null, [], run, null);
+        return Parse(source, json, run, request, startSeconds, durationSeconds, detector);
     }
 
-    internal static SceneJobResult Parse(string source, string json, ToolRunResult? run)
+    private static string Number(double value) => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+    internal static SceneJobResult Parse(string source, string json, ToolRunResult? run,
+        SceneJobRequest? expected = null, double? start = null, double? duration = null, string? expectedDetector = null)
     {
         try
         {
+            if (json.Length > 4 * 1024 * 1024)
+                throw new JsonException("Scene report exceeds the 4 MiB limit.");
             using JsonDocument document = JsonDocument.Parse(json);
             JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                throw new JsonException("Report must be an object.");
+            if (run is not null && (!run.Succeeded || !run.ExitConfirmed))
+                throw new JsonException("Scene process did not complete successfully: " + run.Describe());
 
             string? detector = GetString(root, "detector");
             string? backend = GetString(root, "backend");
             string? precision = GetString(root, "positionPrecision");
             string? error = GetString(root, "error");
             bool success = root.TryGetProperty("success", out JsonElement successElement) && successElement.ValueKind == JsonValueKind.True;
+            if (!success)
+                return new SceneJobResult(false, error ?? "Worker reported failure.", source, detector, null, backend, null, precision, [], run, json);
+            if (GetInt(root, "schemaVersion") != 2 || GetString(root, "source") != source
+                || GetString(root, "positionOrigin") != "native-pts-minus-explicit-origin"
+                || backend != "pyav" || string.IsNullOrWhiteSpace(precision)
+                || GetString(root, "scaleColorPolicy") != "native-size-bgr24"
+                || GetInt(root, "decoderThreads") != 2
+                || GetInt(root, "timeBaseNumerator") is not > 0 || GetInt(root, "timeBaseDenominator") is not > 0
+                || !root.TryGetProperty("build", out JsonElement build) || build.ValueKind != JsonValueKind.Object
+                || string.IsNullOrWhiteSpace(GetString(build, "driver")) || string.IsNullOrWhiteSpace(GetString(build, "pyav"))
+                || string.IsNullOrWhiteSpace(GetString(build, "scenedetect")))
+                throw new JsonException("Missing or unsupported scene timing/build contract.");
+            if (expected is not null && (GetString(root, "jobId") != expected.JobId
+                || GetString(root, "sourceIdentity") != expected.SourceIdentity
+                || GetLong(root, "generation") != expected.Generation || GetInt(root, "streamIndex") != expected.StreamIndex
+                || GetDouble(root, "sourceOriginSeconds") != expected.SourceOriginSeconds
+                || GetDouble(root, "threshold") != expected.Threshold || GetInt(root, "minSceneLenFrames") != expected.MinSceneLenFrames
+                || GetDouble(root, "analyzedStartSeconds") != start || GetDouble(root, "analyzedDurationSeconds") != duration
+                || detector != expectedDetector))
+                throw new JsonException("Scene report does not match the active request.");
 
             double? threshold = null;
-            if (root.TryGetProperty("threshold", out JsonElement thresholdElement) && thresholdElement.TryGetDouble(out double parsedThreshold))
+            if (root.TryGetProperty("threshold", out JsonElement thresholdElement) && thresholdElement.ValueKind == JsonValueKind.Number && thresholdElement.TryGetDouble(out double parsedThreshold))
                 threshold = parsedThreshold;
 
             double? fps = null;
-            if (root.TryGetProperty("frameRateNominal", out JsonElement fpsElement) && fpsElement.TryGetDouble(out double parsedFps))
+            if (root.TryGetProperty("frameRateNominal", out JsonElement fpsElement) && fpsElement.ValueKind == JsonValueKind.Number && fpsElement.TryGetDouble(out double parsedFps))
                 fps = parsedFps;
 
             var scenes = new List<SceneProposal>();
             if (root.TryGetProperty("scenes", out JsonElement sceneArray) && sceneArray.ValueKind == JsonValueKind.Array)
             {
+                if (sceneArray.GetArrayLength() > 20_000)
+                    throw new JsonException("Scene count exceeds the bounded report limit.");
                 foreach (JsonElement scene in sceneArray.EnumerateArray())
                 {
+                    if (scene.ValueKind != JsonValueKind.Object)
+                        throw new JsonException("Scene must be an object.");
+                    double a = GetDouble(scene, "startSeconds") ?? throw new JsonException("Missing scene start.");
+                    double b = GetDouble(scene, "endSeconds") ?? throw new JsonException("Missing scene end.");
+                    if (!double.IsFinite(a) || !double.IsFinite(b) || a > b
+                        || (start is not null && a < start) || (duration > 0 && b >= start + duration)
+                        || (scenes.Count > 0 && a < scenes[^1].EndSeconds))
+                        throw new JsonException("Invalid scene interval.");
+                    long pts = GetLong(scene, "startPts") ?? throw new JsonException("Missing scene PTS.");
+                    int numerator = GetInt(scene, "timeBaseNumerator") ?? 0;
+                    int denominator = GetInt(scene, "timeBaseDenominator") ?? 0;
+                    double origin = GetDouble(root, "sourceOriginSeconds") ?? throw new JsonException("Missing origin.");
+                    long endPts = GetLong(scene, "endPts") ?? throw new JsonException("Missing end PTS.");
+                    if (!double.IsFinite(origin) || numerator <= 0 || denominator <= 0 || Math.Abs(pts * (double)numerator / denominator - origin - a) > 0.000001
+                        || Math.Abs(endPts * (double)numerator / denominator - origin - b) > 0.000001)
+                        throw new JsonException("Scene PTS mapping is inconsistent.");
                     scenes.Add(new SceneProposal(
                         GetInt(scene, "index") ?? scenes.Count,
                         GetInt(scene, "startFrame"),
                         GetInt(scene, "endFrame"),
-                        GetDouble(scene, "startSeconds") ?? 0,
-                        GetDouble(scene, "endSeconds") ?? 0));
+                        a, b) { StartPts = pts, EndPts = endPts, TimeBaseNumerator = numerator,
+                            TimeBaseDenominator = denominator,
+                            EndIsPresentationBoundary = scene.TryGetProperty("endIsPresentationBoundary", out JsonElement boundary) && boundary.ValueKind == JsonValueKind.True });
                 }
             }
+            else throw new JsonException("Missing scene array.");
 
-            return new SceneJobResult(success, error, source, detector, threshold, backend, fps, precision, scenes, run, json);
+            string cache = JsonSerializer.Serialize(new { source = GetString(root, "sourceIdentity"),
+                stream = GetInt(root, "streamIndex"), start = GetDouble(root, "analyzedStartSeconds"),
+                duration = GetDouble(root, "analyzedDurationSeconds"), origin = GetDouble(root, "sourceOriginSeconds"),
+                detector, threshold, minSceneLen = GetInt(root, "minSceneLenFrames"), backend, build,
+                policy = GetString(root, "scaleColorPolicy"), precision });
+            return new SceneJobResult(success, error, source, detector, threshold, backend, fps, precision, scenes, run, json)
+            { Metadata = root.Clone(), CacheIdentity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(cache))) };
         }
         catch (JsonException exception)
         {
@@ -186,10 +275,13 @@ public sealed class SceneWorker
         => element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 
     private static int? GetInt(JsonElement element, string name)
-        => element.TryGetProperty(name, out JsonElement value) && value.TryGetInt32(out int parsed) ? parsed : null;
+        => element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int parsed) ? parsed : null;
+
+    private static long? GetLong(JsonElement element, string name)
+        => element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out long parsed) ? parsed : null;
 
     private static double? GetDouble(JsonElement element, string name)
-        => element.TryGetProperty(name, out JsonElement value) && value.TryGetDouble(out double parsed) ? parsed : null;
+        => element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out double parsed) ? parsed : null;
 
     private static void TryDelete(string path)
     {

@@ -8,6 +8,7 @@ using Vidsc.Core.Playback;
 using Vidsc.Core.Time;
 using Vidsc.Media.Inspection;
 using Vidsc.Media.Playback;
+using Vidsc.Media.Scene;
 using Vidsc.Media.Tooling;
 
 using Xunit;
@@ -17,6 +18,190 @@ namespace Vidsc.Tests;
 public sealed class NavigationViewModelTests
 {
     private static NavigationMap Map() => new(Rational.Create(1, 1000), 0, [0, 40, 130], [0, 1000, 2000]);
+
+    [Theory]
+    [InlineData("missing", true, false)]
+    [InlineData("failed", true, false)]
+    [InlineData("no-video", true, false)]
+    [InlineData("valid", false, false)]
+    [InlineData("valid", true, true)]
+    public async Task SceneCommandRequiresMetadataIdentityAndVideo(string probeState, bool sourceExists, bool eligible)
+    {
+        AppPaths paths = NewPaths();
+        string source = Path.Combine(paths.WorkDirectory, "source.bin");
+        if (sourceExists) File.WriteAllBytes(source, [1, 2, 3]);
+        var toolset = ToolsetWithStubCli(paths);
+        Directory.CreateDirectory(toolset.SceneDirectory);
+        File.WriteAllText(Path.Combine(toolset.SceneDirectory, "vidsc_scene_job.py"), "stub");
+        toolset = toolset with { ScenePythonPath = Path.Combine(toolset.SceneDirectory, "python.exe") };
+        var viewModel = new MainViewModel(new FakePlaybackEngine(), toolset, paths,
+            Dispatcher.CurrentDispatcher, (path, _) => probeState switch
+            {
+                "missing" => Task.FromResult<SourceMediaInfo?>(null),
+                "failed" => throw new IOException("Synthetic metadata probe failure."),
+                "no-video" => Task.FromResult<SourceMediaInfo?>(MakeInfo(path) with { Streams = [] }),
+                _ => Task.FromResult<SourceMediaInfo?>(MakeInfo(path))
+            });
+        try
+        {
+            await viewModel.OpenAsync(source);
+            Assert.True(viewModel.IsOpened);
+            Assert.True(viewModel.HasSceneRuntime);
+            Assert.Equal(eligible, viewModel.SceneCheckCommand.CanExecute(null));
+            if (!eligible)
+            {
+                string? previousError = viewModel.LastError;
+                viewModel.SceneCheckCommand.Execute(null);
+                await viewModel.WaitForMediaJobIdleAsync();
+                Assert.Equal(0, viewModel.MediaJobRunCount);
+                Assert.False(viewModel.IsMediaJobActive);
+                Assert.Equal(previousError, viewModel.LastError);
+            }
+            await viewModel.CloseSourceAsync();
+            Assert.False(viewModel.SceneCheckCommand.CanExecute(null));
+        }
+        finally { await viewModel.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task SourceMutationAfterMetadataRejectsInspectionBeforeReadingWithStaleTiming()
+    {
+        AppPaths paths = NewPaths();
+        string source = Path.Combine(paths.WorkDirectory, "source.bin");
+        File.WriteAllBytes(source, [1, 2, 3]);
+        int reads = 0;
+        var viewModel = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            progressiveOverride: (_, request, _) =>
+            {
+                reads++;
+                return Task.FromResult(new ProgressiveInspectionSnapshot(request.Source, []));
+            });
+        try
+        {
+            await viewModel.OpenAsync(source);
+            File.WriteAllBytes(source, [4, 5, 6]);
+            viewModel.InspectNeighborhoodCommand.Execute(null);
+            await viewModel.WaitForMediaJobIdleAsync();
+            Assert.Equal(0, reads);
+            Assert.Null(viewModel.ProgressiveInspection);
+            Assert.Contains("Source changed since metadata", viewModel.InspectionSummary);
+        }
+        finally { await viewModel.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task SceneReceivesSourceEpochAndSeekCancelsWithoutReleasingSlotEarly()
+    {
+        AppPaths paths = NewPaths();
+        var completion = new TaskCompletionSource<SceneJobResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        SceneJobRequest? request = null;
+        CancellationToken token = default;
+        var viewModel = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path) with
+            { ContainerStartTicks = 100_000_000, Streams = [MakeInfo(path).PrimaryVideo! with { Index = 1 }] }),
+            sceneOverride: (value, ct) => { request = value; token = ct; return completion.Task; });
+        SceneJobResult result = new(true, null, "fixture.mp4", "content", 27, "pyav", null, "pts", [], null, null);
+        try
+        {
+            await viewModel.OpenAsync("fixture.mp4");
+            viewModel.SceneCheckCommand.Execute(null);
+            Assert.Equal(1, request!.StreamIndex);
+            Assert.Equal(10, request.SourceOriginSeconds);
+            Assert.Equal(1, request.Generation);
+            viewModel.SeekExact(1_000_000);
+            Assert.True(token.IsCancellationRequested);
+            Assert.True(viewModel.IsMediaJobActive);
+            completion.SetResult(result);
+            await viewModel.CancelMediaJobAsync();
+            Assert.False(viewModel.IsMediaJobActive);
+            Assert.Contains("cancelled", viewModel.StatusLine);
+        }
+        finally { completion.TrySetResult(result); await viewModel.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task NumericEntryUsesForwardFrameBoundaryAndRejectsUnknownEof()
+    {
+        AppPaths paths = NewPaths();
+        var viewModel = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            (_, _, _, _, _) => Task.FromResult(Map()));
+        try
+        {
+            await viewModel.OpenAsync("fixture.mp4");
+            viewModel.BuildFrameIndexCommand.Execute(null);
+            viewModel.DesiredTimeText = "00:00:00.041";
+            viewModel.CommitDesiredExact();
+            Assert.Equal(1_300_000, viewModel.DesiredSliderTicks);
+            viewModel.DesiredTimeText = "00:00:00.131";
+            viewModel.CommitDesiredExact();
+            Assert.Contains("EOF", viewModel.LastError);
+        }
+        finally { await viewModel.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task SeekingCancelsIndexAndKeepsSlotUntilOwnedWorkConfirmsExit()
+    {
+        AppPaths paths = NewPaths();
+        var completion = new TaskCompletionSource<NavigationMap>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken token = default;
+        var viewModel = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            (_, _, _, _, ct) => { token = ct; return completion.Task; });
+        try
+        {
+            await viewModel.OpenAsync("fixture.mp4");
+            viewModel.BuildFrameIndexCommand.Execute(null);
+            viewModel.SeekExact(1_000_000);
+            Assert.True(token.IsCancellationRequested);
+            Assert.True(viewModel.IsMediaJobActive);
+            Assert.False(viewModel.InspectNeighborhoodCommand.CanExecute(null));
+            completion.SetResult(Map());
+            await viewModel.CancelMediaJobAsync();
+            Assert.Empty(viewModel.KeyframeTicks);
+            Assert.False(viewModel.IsMediaJobActive);
+        }
+        finally { completion.TrySetResult(Map()); await viewModel.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task NeighborhoodIsOptInAndPublishesOnlyMatchingSourceEvidence()
+    {
+        AppPaths paths = NewPaths();
+        bool mismatch = false;
+        int reads = 0;
+        var viewModel = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            progressiveOverride: (_, request, _) =>
+            {
+                reads++;
+                var source = mismatch ? request.Source with { Generation = 999 } : request.Source;
+                return Task.FromResult(new ProgressiveInspectionSnapshot(source,
+                    [new InspectionTraversal(request with { Source = source }, [new(0, -2, 42, true)], [new(0, 1, 42)], true)]));
+            });
+        try
+        {
+            await viewModel.OpenAsync("fixture.mp4");
+            Assert.Equal(0, reads);
+            viewModel.InspectNeighborhoodCommand.Execute(null);
+            await viewModel.CancelMediaJobAsync();
+            Assert.NotNull(viewModel.ProgressiveInspection);
+            Assert.Single(viewModel.ProgressiveInspection.Packets);
+            Assert.Single(viewModel.KeyframeTicks);
+            Assert.Contains("complete verified frame map", viewModel.InspectionCapabilities);
+            var accepted = viewModel.ProgressiveInspection;
+            mismatch = true;
+            viewModel.InspectNeighborhoodCommand.Execute(null);
+            await viewModel.CancelMediaJobAsync();
+            Assert.Same(accepted, viewModel.ProgressiveInspection);
+            Assert.Contains("different source", viewModel.InspectionSummary);
+            await viewModel.OpenAsync("replacement.mp4");
+            Assert.Null(viewModel.ProgressiveInspection);
+        }
+        finally { await viewModel.ShutdownAsync(); }
+    }
 
     [Fact]
     public async Task IndexingOwnsTheSharedJobSlotAndReplacementCancelsAndRejectsStaleMap()
