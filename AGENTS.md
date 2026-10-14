@@ -48,10 +48,11 @@ Split: `Vidsc.App` (WPF), `Vidsc.Core` (contracts), `Vidsc.Media` (operations). 
 
 ## Tooling and delivery
 
-- Scope files to `projects/vidsc`, not other depot projects.
+- Scope files to the vidsc repository (formerly `projects/vidsc` in the depot); do not modify other projects.
 - Use applicable `windows-tooling`, `dotnet-tooling`, `ffmpeg-tooling` and `repo-builds` skills.
 - Host tools: `C:\ffmpeg\bin\ffmpeg.exe` and `ffprobe.exe` (shared build `N-121120-gc74181a04b-20250918`; the adjacent DLLs are required). Runtime overrides for development: `VIDSC_NATIVE_DIR`, `VIDSC_FFMPEG_DIR`, `VIDSC_SCENE_DIR`, `VIDSC_WORK_DIR`.
-- Implemented entry points: `tools/Build-Release.ps1` (+ `-Run`), root `run.bat`, `tools/runtime-manifest.json`, `tools/Promotion.ps1` (+ `tools/Test-Promotion.ps1`), `tools/Build-Scene-Runtime.ps1`, `tools/scene/vidsc_scene_job.py`, `tools/Measure-Media.ps1`, `tools/Test-Presentation.ps1`. Still absent: `tools/Test-Media.ps1`.
+- Implemented entry points: `tools/Build-Release.ps1` (+ `-Run`), root `run.bat`, `tools/runtime-manifest.json`, `tools/Promotion.ps1` (+ `tools/Test-Promotion.ps1`), `tools/Build-Scene-Runtime.ps1`, `tools/scene/vidsc_scene_job.py`, `tools/Measure-Media.ps1`, `tools/Test-Presentation.ps1`, `tools/Test-CI.ps1`, `tools/Test-Delivery.ps1` (manual B6; not yet executed). Still absent: `tools/Test-Media.ps1`.
+- Standalone CI calls `tools/Test-CI.ps1` for Release compilation, unit tests, script parsing and isolated promotion rollback. See `docs/ci.md`. It does not run GPU/visible-frame/real-media tests or certify M1. The existing host-test deferral remains in force until the user resumes it.
 - Release: `win-x64`, installed .NET 10 Desktop Runtime, staging before promotion, previous release retained on failure, and a running app is never stopped to overwrite its files. The bundle layout deliberately replaces the single-EXE ideal; verify the actual native/CLI/scene sets from the staged location.
 - Only logs, generated artifacts and runtime downloads are git-ignored (project-local `.gitignore`). Never edit global git or user settings.
 

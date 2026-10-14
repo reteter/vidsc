@@ -18,6 +18,10 @@ Timeline zoom-scale/scrollbar/whole-clip overview TODO is recorded in docs/imple
 Remaining host benchmarks are deferred until the user explicitly says they have finished working
 and testing may resume. No UI automation, automatic restart or scheduled run. Laptop testing is
 not planned for this checkpoint; its separate hardware profile would not close host acceptance.
+Standalone extraction/CI preparation is authorized separately: target D:\code\codex\vidsc,
+origin https://github.com/reteter/vidsc.git. User handles Git initialization/remote setup.
+Test-CI passes locally (241 units, four rollback scenarios, Release compile and tracked PS syntax);
+workflow is not yet verified on GitHub. Test-Delivery is versioned; full B6 remains deferred.
 The pinned maintained source hook is Proven for IObservedPresentationSource. Every read checks
 native freshness; normalized start/end require a complete matching source map and a verified end.
 Missing map/end returns null; EOF is unknown unless independently verified. Core stores no second

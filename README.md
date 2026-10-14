@@ -70,12 +70,19 @@ refuses instead of stopping it.
 dotnet build Vidsc.slnx -c Release
 dotnet test  Vidsc.slnx -c Release
 pwsh -NoProfile -File tools/Test-Navigation.ps1
+pwsh -NoProfile -File tools/Test-CI.ps1 # compile, unit tests, script syntax and promotion rollback; no playback
 ```
 
 The navigation script checks deterministic CFR/fractional/VFR/offset timing, bounded indexing and
 damaged-source rejection against the packaged reader. Benchmark tooling and the remaining M1
 experiment are tracked in [implementation progress](docs/implementation-progress.md); a short
 harness run does not constitute the full performance acceptance suite.
+
+The standalone repository's GitHub Actions workflow runs the same CI entry point on Windows
+for pushes and pull requests. See [CI scope and local-test policy](docs/ci.md). GPU presentation,
+runtime-bundle delivery and real-media benchmarks remain separate checks; green CI alone does
+not complete M1. `tools/Test-Delivery.ps1` is now versioned as the manual B6 scenario; its full
+execution remains deferred with the other host checks.
 
 ## What the build produces
 

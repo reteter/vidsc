@@ -20,6 +20,19 @@ windows or start those runs in the meantime. No schedule or automatic restart is
 Laptop testing was considered and declined for this checkpoint: it would provide a separate
 hardware profile rather than close this host's acceptance. Full M1 remains open; do not start M2.
 
+Standalone extraction is being prepared for `D:\code\codex\vidsc`, with intended origin
+`https://github.com/reteter/vidsc.git`. The user owns repository initialization and remote setup;
+do not overwrite their target files or Git configuration. Keep the depot copy until migration is
+verified. Project history will be extracted without unrelated depot projects.
+
+The new standalone CI workflow calls `tools/Test-CI.ps1`: tracked PowerShell syntax, four existing
+promotion/rollback scenarios, solution restore/Release build and all 241 unit tests. The local
+entry point passes (`artifacts/ci/20261014-191213-7e026b43/`); GitHub execution is not yet verified.
+Flyleaf is now explicitly included in the solution so Release solution builds retain its Release
+configuration. This adds no native playback or real-media acceptance. See [CI policy](ci.md).
+`tools/Test-Delivery.ps1` is included in version control as the manual B6 runner. Syntax and its
+pre-launch setup-failure report path were checked; full B6 remains unrun and deferred.
+
 ## Current workflow
 
 The parent agent owns integration, verification, documentation and local commits. Implementation
