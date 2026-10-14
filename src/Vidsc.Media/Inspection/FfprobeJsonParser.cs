@@ -44,7 +44,7 @@ public static class FfprobeJsonParser
             long? containerDuration = null;
             if (root.TryGetProperty("format", out JsonElement format)
                 && format.TryGetProperty("duration", out JsonElement durationElement)
-                && TryParseSecondsToTicks(durationElement.GetString(), out long durationTicks))
+                && TryParseSecondsToTicks(GetString(format, "duration"), out long durationTicks))
             {
                 containerDuration = durationTicks;
             }
@@ -52,7 +52,7 @@ public static class FfprobeJsonParser
             long fileSize = 0;
             if (root.TryGetProperty("format", out JsonElement formatForSize)
                 && formatForSize.TryGetProperty("size", out JsonElement sizeElement)
-                && long.TryParse(sizeElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsedSize))
+                && long.TryParse(GetString(formatForSize, "size"), NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsedSize))
             {
                 fileSize = parsedSize;
             }
@@ -61,7 +61,9 @@ public static class FfprobeJsonParser
                 fileSize = new FileInfo(path).Length;
             }
 
-            info = new SourceMediaInfo(path, fileSize, containerDuration, streams);
+            long? containerStart = root.TryGetProperty("format", out JsonElement startFormat)
+                && TryParseSecondsToTicks(GetString(startFormat, "start_time"), out long startTicks) ? startTicks : null;
+            info = new SourceMediaInfo(path, fileSize, containerDuration, streams) { ContainerStartTicks = containerStart };
             return true;
         }
         catch (JsonException exception)
@@ -92,7 +94,11 @@ public static class FfprobeJsonParser
             Channels: GetInt(stream, "channels"),
             SampleRate: ParseInt(GetString(stream, "sample_rate")),
             ChannelLayout: GetString(stream, "channel_layout"),
-            Language: stream.TryGetProperty("tags", out JsonElement tags) ? GetString(tags, "language") : null);
+            Language: stream.TryGetProperty("tags", out JsonElement tags) ? GetString(tags, "language") : null)
+        {
+            StartPts = stream.TryGetProperty("start_pts", out JsonElement startPts)
+                && startPts.ValueKind == JsonValueKind.Number && startPts.TryGetInt64(out long pts) ? pts : null
+        };
     }
 
     private static int ParseRotation(JsonElement stream)
@@ -199,7 +205,8 @@ public static class FfprobeJsonParser
             : null;
 
     private static int? GetInt(JsonElement element, string name)
-        => element.TryGetProperty(name, out JsonElement value) && value.TryGetInt32(out int parsed) ? parsed : null;
+        => element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number
+            && value.TryGetInt32(out int parsed) ? parsed : null;
 
     private static int? ParseInt(string? text)
         => int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) ? parsed : null;

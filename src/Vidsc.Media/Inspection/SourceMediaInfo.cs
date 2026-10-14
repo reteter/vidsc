@@ -21,6 +21,8 @@ public sealed record MediaStreamInfo(
     string? ChannelLayout,
     string? Language)
 {
+    public long? StartPts { get; init; }
+
     public bool IsVideo => string.Equals(CodecType, "video", StringComparison.OrdinalIgnoreCase);
 
     public bool IsAudio => string.Equals(CodecType, "audio", StringComparison.OrdinalIgnoreCase);
@@ -40,6 +42,8 @@ public sealed record SourceMediaInfo(
     long? ContainerDurationTicks,
     IReadOnlyList<MediaStreamInfo> Streams)
 {
+    public long? ContainerStartTicks { get; init; }
+
     public MediaStreamInfo? PrimaryVideo => Streams.FirstOrDefault(stream => stream.IsVideo);
 
     public MediaStreamInfo? PrimaryAudio => Streams.FirstOrDefault(stream => stream.IsAudio);

@@ -46,3 +46,17 @@ This is a **content** oracle for the packaged CLI. It is not evidence of display
 therefore fails if it is missing rather than silently skipping the scene sub-gate. A positive
 `--duration` is checked against the number of frames the worker actually decoded (`framesProcessed`),
 not only the reported field.
+
+## Navigation fixtures
+
+Run `pwsh -NoProfile -File tools/Test-Navigation.ps1` after building Release. The script uses the
+packaged CLI and reader from `artifacts/release/app`; each run owns a unique directory under
+`artifacts/tests/navigation/`. It generates 48-frame 160×90 AVC fixtures with two B-frames and fixed
+12-frame GOPs. Rates are 24 and 24000/1001. A third fixture has source PTS `n/24` for `n < 24` and
+`(2*n-24)/24` afterwards, plus a two-second container epoch. All 48 navigation times must match
+those independent formulas within one UI tick, including the source-to-UI offset.
+
+The script also verifies packet-only scans do not expose a global frame index, enforces a four-frame
+resource cap, and corrupts an NAL length in a new fixture copy to verify decode errors reject the
+map. It writes `report.json` with the observed counts and errors. These are file-navigation checks;
+they do not establish displayed frame identity, presentation ends or stream-copy safety.
