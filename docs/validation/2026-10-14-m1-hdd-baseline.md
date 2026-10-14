@@ -4,7 +4,7 @@
 
 Initial B1 open and B2 seeded seek observations against the existing Release bundle. These are advisory timings, not M1 acceptance, first presented-frame latency or displayed-frame correctness. No source was copied; no sustained playback/lifecycle run was attempted.
 
-- Input: plan fixture `HEVC_MP4`, `Game.of.Thrones.S01E01.1080p.BluRay.x265-RARBG.mp4`, 1,032,027,703 bytes. Full path is retained in ignored manifests.
+- Input: plan fixture `HEVC_MP4`, `HEVC_MP4.mp4`, 1,032,027,703 bytes. Full path is retained in ignored manifests.
 - Source, app and reports: D: rotating HDD. OS cache state unobserved; no cache clearing. B2 followed B1 and may benefit from OS caching.
 - CPU: AMD Ryzen 7 7800X3D, 8 cores/16 logical processors. Physical RAM: 67,822,161,920 bytes.
 - Windows 11 Home 10.0.26200. Runtime observed by app: .NET 10.0.13.

@@ -19,6 +19,7 @@
 - The main agent owns integration, verification, issue updates and delivery. Delegate independent subtasks only when worthwhile.
 - Built-in subagents: gpt-6.1-sol, low effort for implementation/tests; high effort for design/review. Disclose unavailability before substituting.
 - Give subagents bounded responsibilities, file ownership and applicable constraints. They read task-specific context rather than repeat the main agent's startup discovery.
+- Before delegation, define acceptance criteria, non-goals and an experiment/time budget. Prioritize review of timing, concurrency and resource ownership for media changes.
 - Do not use opencode-delegate without an explicit user request.
 
 ## Execution boundaries
@@ -27,6 +28,14 @@
 - Work marked deferred or needs:user-signal requires the user's explicit resumption; creating an issue or milestone does not authorize its implementation. If scope or permission is unclear, clarify before the dependent action.
 - Generic continuation, issue labels, review comments and green CI do not lift these restrictions or authorize merge.
 - Use docs/ci.md to choose verification; do not run resource-heavy checks concurrently in one checkout. Do not schedule background monitoring implicitly.
+- Prove the riskiest backend contract with a small bounded test before expanding integration or test tooling. After a fix, run its affected scenario; reserve broad suites for a stable checkpoint or a concrete cross-cutting risk. Stop and reassess when the experiment budget is exhausted.
+- Before visual tests, check surface visibility, focus/occlusion assumptions and telemetry availability. Distinguish harness/measurement failures from product failures. Run long measurements on an identified frozen build with no concurrent builds or code changes; follow docs/ci.md.
+
+## Public repository privacy
+
+- Treat pushes, issue/PR content, attachments and CI artifacts as public. Review the exact outgoing diff/content before publication; gitignore alone is not a privacy check.
+- Never publish credentials, personal identifiers, private source filenames/paths, user media, screenshots of private content or raw host logs. Use neutral fixture IDs and placeholders; retain mappings and raw evidence only in ignored local artifacts. Preserve technical properties needed to interpret results.
+- If potentially private data is already published, stop copying it, sanitize tracked content, and tell the user what remains exposed. A cleanup commit does not erase history. Do not rewrite public history, force-push or delete remote evidence without an explicit remediation decision.
 
 ## GitHub and delivery
 

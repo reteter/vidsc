@@ -22,7 +22,7 @@ this historical snapshot does not grant permission to run tests. No automatic re
 Laptop testing was considered and declined for this checkpoint: it would provide a separate
 hardware profile rather than close this host's acceptance. Full M1 was still open at that checkpoint.
 
-Standalone migration is complete at `D:\code\codex\vidsc`, with origin
+Standalone migration is complete at `<REPOSITORY_ROOT>`, with origin
 `https://github.com/reteter/vidsc.git`. The user's initialization and all 19 project commits are
 preserved. The depot copy is archival; use this repository for future work. The CI entry point
 also passes here (241 units and four rollback scenarios). Published to origin/master. Hosted CI passes on commit `ee711e7` with 241/241 tests and all rollback checks. See [migration details and commit mapping](repository-migration.md).
@@ -129,7 +129,7 @@ informational identity `3.11.11+vidsc.hook.1`. The older isolated experiment rem
 See [source hook validation](validation/2026-10-14-source-hook.md) for current acceptance evidence.
 
 For that checkpoint, the user authorized dedicated test directories and cleanup outside the worktree on C:/E: NVMe
-(C: approximately 28 GB free, E: over 100 GB at authorization). D: source/app is HDD. Label storage
+(free space was checked locally at authorization). D: source/app is HDD. Label storage
 and cache state in every timing comparison; use a uniquely owned E: directory and preserve sources.
 The real HEVC source is the `HEVC_MP4` path in the plan. `winapp ui` works outside the sandbox;
 the computer-use plugin is now installed as well. No global settings have been changed.
@@ -141,3 +141,11 @@ status. Startup/workflow/CI guidance now refers to issue-specific scope and defe
 hard-coded milestone restrictions. README points to issues and dated evidence rather than copying
 test counts. Archive-copy context remains historical migration information. Documentation diff
 checks were used; this change does not resume tests or expand implementation scope.
+
+The retrospective recommendations were added to AGENTS.md and docs/ci.md: bounded contract-first
+experiments, scenario-focused regression, visual/telemetry preflight, timing/concurrency/ownership
+review and frozen-build measurement. Public-output review now covers commits, issues, PRs and CI
+artifacts. Identified personal/source paths in documentation were replaced with neutral placeholders;
+a targeted tracked-file scan found no remaining matches for the identified values. This is not a
+complete secret audit and does not erase previously published history. Historical remediation
+requires a separate user decision. No host tests were run for this documentation change.
