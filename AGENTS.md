@@ -1,61 +1,67 @@
-# vidsc
+# vidsc — repository instructions
 
-## Purpose and scope
+## Scope and sources of truth
 
-Windows x64 video navigator and trimmer: **C# / .NET 10 / WPF / Flyleaf**, separate FFmpeg/ffprobe tools, local PySceneDetect/PyAV worker. Main inputs: MP4/MKV/MOV with AVC/HEVC, 720p/1080p, portrait variants and long clips.
+- Work in this repository or its owned worktrees. Origin: https://github.com/reteter/vidsc.git.
+- GitHub Issues holds current scope, status, dependencies and deferrals; PRs hold proposed changes, reviews and merge state.
+- docs/implementation-plan.md defines requirements and acceptance contracts. docs/implementation-progress.md records verified history; docs/validation/ holds evidence. Do not duplicate current task status or test counts here.
 
-Required: **stream copy** and **accurate cuts with re-encoded boundaries/copied interior**, scene detection, thumbnails, waveform, named intervals, JSON projects and batch export. A stream-copy editor is an intermediate milestone, not full completion.
+## Session start — main agent
 
-## Current state and entry points
+1. Read docs/implementation-progress.md and docs/ci.md.
+2. Inspect Git status, branch/upstream, recent commits and worktrees. Fetch origin before selecting a base or assessing freshness.
+3. Read the selected issue, comments and related PR. If none is selected, inspect open issues/PRs and choose only eligible work within the authorized scope.
+4. Read docs/github-workflow.md before issue/branch/PR lifecycle operations. Read other documentation only as needed; do not repeat full research or accepted suites without a concrete reason.
+5. Briefly confirm the state and next action. If no work is eligible, report the blocker instead of expanding scope.
 
-**M0 and the M1 read-only presentation sub-gate are verified** (14 October 2026); **full M1 remains open** for real-media B1–B6 and bounded visual/manual acceptance. Current evidence: **241/241 unit tests**, **140/140** visible checks across five fixtures, **19/19** visible lifecycle checks plus lifecycle actions, and the earlier **108/108** exhaustive VFR checks. See [presentation acceptance](docs/validation/2026-10-14-m1-presentation-acceptance.md). The timeline supports click/scrub, zoom/pan/fit/center, keyboard/wheel navigation, optional bounded scans and time/frame entry. M2/M5a have preparatory navigation pieces only; interval editing, persistence and production export are absent. This session stops after M1 and its tests; do not start M2. Read [implementation progress](docs/implementation-progress.md) for restart state.
+## Orchestration
 
-- Solution `Vidsc.slnx`; SDK pinned in `global.json` (10.0.201); central app/test pins in `Directory.Packages.props`. Playback uses maintained `third_party/FlyleafLib` sources from the exact NuGet 3.11.11 commit, informational identity `3.11.11+vidsc.hook.1`, with unchanged pinned FFmpeg bindings 9.0.2 and Vortice dependencies.
-- `src/Vidsc.Core` (rational time, playback-position and navigation contracts; no WPF/Flyleaf), `src/Vidsc.Media` (Flyleaf adapter, CLI tooling, streaming ffprobe navigation, scene worker), `src/Vidsc.App` (WPF shell/timeline), `tests/Vidsc.Tests` (includes WPF view-model regressions; current counts/evidence in progress/validation docs).
-- Build/run: `pwsh -NoProfile -File tools/Build-Release.ps1 [-Run]`, or root `run.bat`. Release lands in `artifacts/release` as a **bundle** (app + `native/flyleaf` + `tools/ffmpeg` + `scene`), framework-dependent (no .NET bundled). Build your own verification before changing this contract.
-- Media tooling: `artifacts/release/app/tools/ffmpeg` (CLI + adjacent DLLs) and `artifacts/release/app/native/flyleaf` (pinned playback ABI set) are **separate sets** with different FFmpeg major ABIs; never mix them. `tools/runtime-manifest.json` holds the pins; every build regenerates `runtime-manifest.observed.json`.
-- The scene runtime is bundled as a **relocatable embeddable CPython** (`scene/python`, built by `tools/Build-Scene-Runtime.ps1` from the official embeddable distribution plus project-local wheels; no `pyvenv.cfg`, no host-Python dependency). A legacy host-Python `venv` remains a local-development fallback; using it does not satisfy the self-contained runtime gate.
-- Automation: `Vidsc.App.exe --smoke-test --media <fixture> --report <path>` runs a scripted open/play/seek/step/dispose sequence. The smoke **fails** (not warns) on a missing render surface, no rendered-frame progress, a missed burst completion, a pending request that does not clear, or unexpected exact-edit eligibility, and records the loaded Flyleaf native modules and the CLI tool set. Current default Release verification passed; log: `artifacts/m1-qualified-release-build.log`. B6 clean-location delivery remains separate and pending.
+- The main agent owns integration, verification, issue updates and delivery. Delegate independent subtasks only when worthwhile.
+- Built-in subagents: gpt-6.1-sol, low effort for implementation/tests; high effort for design/review. Disclose unavailability before substituting.
+- Give subagents bounded responsibilities, file ownership and applicable constraints. They read task-specific context rather than repeat the main agent's startup discovery.
+- Before delegation, define acceptance criteria, non-goals and an experiment/time budget. Prioritize review of timing, concurrency and resource ownership for media changes.
+- Do not use opencode-delegate without an explicit user request.
 
-Read [the implementation plan](docs/implementation-plan.md) first. [Research](docs/research/2026-10-14-video-architecture.md) contains sources and test-media paths/properties (section 18). [Review](docs/implementation-plan-review.md) explains the corrections; its line references describe the original plan. [M0+M1 validation record](docs/validation/2026-10-14-m0-m1.md) lists exact dependency identities, tested commands, evidence and pending gates.
+## Execution boundaries
 
-Remaining M1 gates are the plan's real-media B1–B6 scenarios and bounded visual/manual checks (dimensions/aspect, rotation/portrait, DPI, fullscreen, popups and focus). The presentation hook sub-gate is accepted; do not infer exact editing or safe cuts from that acceptance.
+- Read execution restrictions and authorized scope from the relevant issues and the user's instructions before starting work. Record deferrals and their resumption conditions in issues, not in this file.
+- Work marked deferred or needs:user-signal requires the user's explicit resumption; creating an issue or milestone does not authorize its implementation. If scope or permission is unclear, clarify before the dependent action.
+- Generic continuation, issue labels, review comments and green CI do not lift these restrictions or authorize merge.
+- Use docs/ci.md to choose verification; do not run resource-heavy checks concurrently in one checkout. Do not schedule background monitoring implicitly.
+- Prove the riskiest backend contract with a small bounded test before expanding integration or test tooling. After a fix, run its affected scenario; reserve broad suites for a stable checkpoint or a concrete cross-cutting risk. Stop and reassess when the experiment budget is exhausted.
+- Before visual tests, check surface visibility, focus/occlusion assumptions and telemetry availability. Distinguish harness/measurement failures from product failures. Run long measurements on an identified frozen build with no concurrent builds or code changes; follow docs/ci.md.
 
-Navigation exception: file-derived PTS and key-packet candidates alone never certify presented frames or safe cuts. Full frame-index mode requires a completed strictly ordered scan. Scans share the owned media-job slot; a stuck child blocks replacement jobs. `tools/Test-Navigation.ps1` checks the packaged reader.
+## Public repository privacy
 
-The maintained source hook is qualified as `Proven` for the read-only `IObservedPresentationSource` getter. Each read revalidates native source/operation/swap-chain/present identity. Normalized start/end additionally require settled submission and a matching complete source map; missing map/end returns null, and EOF requires independent verification. Core does not store a second native observation. Exact editing stays disabled because interval editing/export are not implemented. See [source hook validation](docs/validation/2026-10-14-source-hook.md).
+- Treat pushes, issue/PR content, attachments and CI artifacts as public. Review the exact outgoing diff/content before publication; gitignore alone is not a privacy check.
+- Never publish credentials, personal identifiers, private source filenames/paths, user media, screenshots of private content or raw host logs. Use neutral fixture IDs and placeholders; retain mappings and raw evidence only in ignored local artifacts. Preserve technical properties needed to interpret results.
+- If potentially private data is already published, stop copying it, sanitize tracked content, and tell the user what remains exposed. A cleanup commit does not erase history. Do not rewrite public history, force-push or delete remote evidence without an explicit remediation decision.
 
-Verified so far: build/test pipeline, Release bundle startup, D3D11 hardware playback on labeled synthetic fixtures including HEVC Main10/edit lists, packaged CLI probe/stream-copy check, a relocatable scene job, presentation/lifecycle correctness and the ownership/promotion regressions. Full real-media B1–B6 acceptance, MOV/HDR coverage and bounded visual/manual acceptance remain open. Historical real-source advisory timing is not full acceptance. Never hard-code supplied test-media paths into production code.
+## GitHub and delivery
 
-## Media correctness rules
+- Track substantial work in an issue. Apply the classification and lifecycle rules in docs/github-workflow.md.
+- Prefer the GitHub connector for supported operations on reteter/vidsc using the reteter account; use gh for gaps and plugin-required CLI workflows.
+- For CLI writes, create literal UTF-8 payload files under ignored artifacts with apply_patch; use --body-file or gh api --input instead of shell-interpolated bodies.
+- Use codex/<issue-or-topic> branches from current origin/master; reuse the branch/PR for the same coherent scope.
+- Task-related documentation stays with its implementation. Independent documentation uses a separate default-based branch, preferably an isolated worktree when another task is active.
+- Standing authorization covers significant verified commits, ordinary feature-branch pushes, PR creation/updates and in-scope CI/review repairs. Never push directly to master, force-push, rewrite published history or bypass protections.
+- Use PR Completion for PR preparation/follow-up and Code Review where useful. Report current-head checks and review evidence.
+- Merge, auto-merge and queue enrollment require explicit user approval for the particular PR and current head; new commits invalidate approval.
+- Default to squash merge: one coherent PR becomes one default-branch commit. A merge commit is an explicit user-approved exception; do not choose rebase merge automatically. Use PR Completion's validated landing helper with the approved method. After squash, start new work from the refreshed default branch; never force-delete a branch merely because safe deletion rejects it.
+- Keep delivery issues open until merge. Follow the documented issue-closure and branch-cleanup rules.
 
-- Sources stay read-only. Use owned temporary outputs, validation, no-clobber promotion and recovery; preserve existing files on failure.
-- Use integer PTS/rational time bases, distinct nullable DTS and explicit source/output mapping. Average FPS cannot define exact VFR positions; the scene worker's own frame-index→seconds mapping is approximate for VFR.
-- Follow plan section 4.1: half-open intervals, In at the confirmed frame, Out including its presentation end; retain requested/resolved boundaries separately.
-- Flyleaf request/completion time does not prove displayed-frame PTS: `SeekCompleted` echoes requested ms and `Player.CurTime` is written by both seek and render paths. Use only the freshness-checked `IObservedPresentationSource` for qualified observations. Core `ObservedPresentation` remains empty to avoid bypassing native freshness; exact editing and the UI's Set In/Out/Export remain disabled because those features are not implemented. Evidence: `src/Vidsc.Media/Playback/FlyleafPresentedFrameHook.cs` and the presentation acceptance record.
-- Key packets/I-pictures/scenes are not automatically safe cuts. The supplied x265 Main10 source has open GOP/CRA and ~10.427-second gaps.
-- Smart rendering must prove reference independence, parameter-set compatibility and both joins. Neither NVENC nor software encoding guarantees splicing; no silent full transcode or ten-to-eight-bit conversion.
-- Separate video accuracy, boundary quality and audio precision. Preserve 5.1/offsets; no silent downmix/subtitle conversion or sample-exact claims for copied audio.
-- Use the plan's independent validation oracles; boundary checks are not a full scan.
+## Media safeguards and technical context
 
-## GPU, memory and architecture
+- vidsc is a Windows x64 C#/.NET/WPF/Flyleaf video navigator and trimmer. Stream copy is an intermediate milestone; accurate cuts with re-encoded boundaries and copied interior remain required.
+- Keep source media read-only. Use owned temporary outputs, validation and no-clobber promotion; preserve existing files on failure.
+- Never infer exact frames or safe cuts from average FPS, seek completion, key packets or scene markers. Read the relevant media contracts before implementation.
+- Keep playback-native and CLI FFmpeg runtime sets separate. No silent full transcode, bit-depth reduction, downmix or subtitle conversion.
+- Keep generated media, runtime downloads and large logs in ignored artifacts. Do not change global Git, tool or user settings.
 
-Hardware: **RTX 4070 Ti 12 GB VRAM, 64 GB RAM**; the host also exposes an AMD integrated adapter and the Microsoft Basic Render Driver, and the project/artifact volume is a **rotating HDD** (`D:`), so I/O measurements must be labelled. Prefer hardware decode/render, disclose fallback and measure acceleration. Stream copy does not use NVENC.
+## Read when relevant
 
-Bound caches/queues; the soft 2–4 GiB normal RAM target includes child processes. Avoid whole-video loads and retained decoder surfaces. Initially use one media worker across indexing/thumbnails/scenes/exports, with playback independent and explicit cancellation/checkpoints.
-
-Split: `Vidsc.App` (WPF), `Vidsc.Core` (contracts), `Vidsc.Media` (operations). Use JSON and file caches; add infrastructure/native workers only for a demonstrated need. No database, plugin framework or scheduler abstractions.
-
-## Tooling and delivery
-
-- Scope files to the vidsc repository (formerly `projects/vidsc` in the depot); do not modify other projects.
-- Use applicable `windows-tooling`, `dotnet-tooling`, `ffmpeg-tooling` and `repo-builds` skills.
-- Host tools: `C:\ffmpeg\bin\ffmpeg.exe` and `ffprobe.exe` (shared build `N-121120-gc74181a04b-20250918`; the adjacent DLLs are required). Runtime overrides for development: `VIDSC_NATIVE_DIR`, `VIDSC_FFMPEG_DIR`, `VIDSC_SCENE_DIR`, `VIDSC_WORK_DIR`.
-- Implemented entry points: `tools/Build-Release.ps1` (+ `-Run`), root `run.bat`, `tools/runtime-manifest.json`, `tools/Promotion.ps1` (+ `tools/Test-Promotion.ps1`), `tools/Build-Scene-Runtime.ps1`, `tools/scene/vidsc_scene_job.py`, `tools/Measure-Media.ps1`, `tools/Test-Presentation.ps1`, `tools/Test-CI.ps1`, `tools/Test-Delivery.ps1` (manual B6; not yet executed). Still absent: `tools/Test-Media.ps1`.
-- Standalone CI calls `tools/Test-CI.ps1` for Release compilation, unit tests, script parsing and isolated promotion rollback. See `docs/ci.md`. It does not run GPU/visible-frame/real-media tests or certify M1. The existing host-test deferral remains in force until the user resumes it.
-- Release: `win-x64`, installed .NET 10 Desktop Runtime, staging before promotion, previous release retained on failure, and a running app is never stopped to overwrite its files. The bundle layout deliberately replaces the single-EXE ideal; verify the actual native/CLI/scene sets from the staged location.
-- Only logs, generated artifacts and runtime downloads are git-ignored (project-local `.gitignore`). Never edit global git or user settings.
-
-## Working style
-
-Communicate in **Polish**; code, comments, documents and commits in **English**. Keep changes simple; run minimal relevant verification and report gaps. Keep this file concise: details/evidence belong in `docs`, generated media/logs in ignored artifacts.
+- Architecture, timing/edit/export semantics, resource budgets and milestone gates: docs/implementation-plan.md.
+- Playback hooks, lifecycle and media correctness evidence: relevant records in docs/validation/ and their implementation references.
+- Verification policy: docs/ci.md. Build/delivery entry points: tools/Build-Release.ps1, run.bat and tools/runtime-manifest.json; apply repo-builds when changing delivery workflows.
+- GitHub operations, branch isolation and documentation ownership: docs/github-workflow.md.
+- Short continuation prompts: docs/session-start.md.

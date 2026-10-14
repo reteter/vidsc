@@ -390,10 +390,10 @@ Representative real-file fixtures, configured through an optional local test man
 
 ```text
 AVC_MKV:
-D:\qbits\The.Death.of.Robin.Hood.2026.1080p.WEB-DL.DD5.1.H.264-ROBINHOODROBBED.mkv
+<LOCAL_MEDIA_DIR>\AVC_MKV.mkv
 
 HEVC_MP4:
-D:\qbits\Game.of.Thrones.S01-S08.1080p.BluRay.x265-RARBG\Game.of.Thrones.S01.1080p.BluRay.x265-RARBG\Game.of.Thrones.S01E01.1080p.BluRay.x265-RARBG.mp4
+<LOCAL_MEDIA_DIR>\HEVC_MP4.mp4
 ```
 
 Use the inspected neighborhood around 120 seconds as one regression case, not the entire corpus. Verify additional boundaries and near-EOF behavior. A missing real file skips that optional suite with a reason; synthetic correctness tests must still run.

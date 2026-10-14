@@ -1,6 +1,6 @@
 # Continuous integration
 
-The standalone repository uses `.github/workflows/ci.yml` on a Windows hosted runner. It installs the SDK specified by `global.json` (currently 10.0.201, with the existing roll-forward policy), then calls the same entry point used locally:
+The repository uses `.github/workflows/ci.yml` on a Windows hosted runner. It installs the SDK and roll-forward policy specified by `global.json`, then calls the same entry point used locally:
 
 ```powershell
 pwsh -NoProfile -File tools/Test-CI.ps1
@@ -10,11 +10,36 @@ The script resolves the project root from its own location, so it also works whe
 
 Each invocation keeps a unique `artifacts/ci/<run>/` directory containing command logs, the build binary log, transcript, failure details and TRX results when tests execute. The workflow uploads this directory even after a failed check; stages that did not run have no results. Logs are retained for 14 days. Runs have a 25-minute timeout, superseded runs on the same branch are cancelled, and the token has read-only repository contents access. No dependency cache or lock-file policy is introduced.
 
-This workflow becomes active when vidsc is the repository root; GitHub does not discover this nested workflow while it remains under `projects/vidsc` in the depot. Copy the whole project tree, including `.github`, without adding depot-relative paths to the workflow.
+A green CI run establishes compilation, unit checks and promotion rollback behavior. It does not establish a runnable Release bundle, native dependency packaging, presented-frame correctness or performance/resource acceptance. Windows/native checks remain separate from CI; consult the relevant issues for execution restrictions. `tools/Build-Release.ps1` and `run.bat` retain their build, bundle and launch roles.
 
-A green CI run establishes compilation, unit checks and promotion rollback behavior. It does not establish a runnable Release bundle, native dependency packaging, presented-frame correctness, B1–B6 performance/resource acceptance or M1 completion. Those existing Windows/native checks remain separate and deferred in CI. `tools/Build-Release.ps1` and `run.bat` retain their existing build, bundle and launch roles.
+Locally, run the smallest relevant tests after behavior changes; run this full entry point for CI/script changes, dependency or solution changes, or before publishing a branch with code changes. A passing run need not be repeated without another change or unresolved failure. Use the existing Release/native validation only when changing playback, GPU integration, media jobs, packaging or lifecycle behavior that those checks actually cover. Documentation-only branches need local diff/link checks, not a build; normal hosted CI still runs on push/PR. Do not run resource-heavy local build/test checks concurrently against the same checkout.
 
-Locally, run the smallest relevant tests after behavior changes; run this full entry point for CI/script changes, dependency or solution changes, or before publishing a branch. A passing run need not be repeated without another change or unresolved failure. Use the existing Release/native validation only when changing playback, GPU integration, media jobs, packaging or lifecycle behavior that those checks actually cover. Documentation-only changes normally need no build. Do not run resource-heavy local build/test checks concurrently against the same checkout.
+## Efficient media verification
+
+Before expanding an integration, choose the highest-risk backend contract and a small test with
+explicit acceptance criteria, non-goals and a time/run budget. Do not grow a generic harness while
+the contract remains unproven. At the budget limit, summarize evidence and decide the next bounded
+experiment instead of repeatedly launching broad suites.
+
+After a fix, run the affected scenario first. Broad suites belong at stable checkpoints, when
+required by the CI contract, or when a named cross-cutting risk justifies them. A harness change
+needs its own small check before being used to certify product behavior.
+
+Before visible-frame runs, verify the render surface, visibility/focus/occlusion assumptions and
+availability/freshness of required telemetry. An unavailable measurement is not product acceptance
+or automatically a playback defect. Diagnose the harness separately.
+
+Run long measurements only when authorized, on a frozen build identified by commit and tool/runtime
+manifest. Do not compile, replace binaries or edit measured code during the run, including from
+another agent or checkout sharing those outputs. Record storage/cache state and scenario counts.
+Do not shorten frozen acceptance durations and label the result a full pass.
+
+## Public evidence
+
+Review uploaded logs, TRX/build logs, screenshots and attachments as public output, even if their
+local directory is ignored by Git. Hosted CI must use synthetic/non-private inputs. Keep local media
+paths, personal identifiers and raw host reports in ignored artifacts; publish neutral fixture IDs,
+necessary technical properties and sanitized result summaries. Never copy credentials into reports.
 
 ## Hosted verification
 

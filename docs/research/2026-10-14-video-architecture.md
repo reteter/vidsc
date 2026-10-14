@@ -608,8 +608,8 @@ Local checks performed for this report: confirmed the `vidsc` project directory 
 ### Source paths and probe identity
 
 ```text
-D:\qbits\The.Death.of.Robin.Hood.2026.1080p.WEB-DL.DD5.1.H.264-ROBINHOODROBBED.mkv
-D:\qbits\Game.of.Thrones.S01-S08.1080p.BluRay.x265-RARBG\Game.of.Thrones.S01.1080p.BluRay.x265-RARBG\Game.of.Thrones.S01E01.1080p.BluRay.x265-RARBG.mp4
+<LOCAL_MEDIA_DIR>\AVC_MKV.mkv
+<LOCAL_MEDIA_DIR>\HEVC_MP4.mp4
 ```
 
 Executed tools: `C:\ffmpeg\bin\ffmpeg.exe` and `C:\ffmpeg\bin\ffprobe.exe`, both reporting **N-121120-gc74181a04b-20250918**. This is the installed development snapshot, **not** the FFmpeg 9.0.2 release identified in online research. Its configuration includes `--enable-shared`, `--enable-gpl`, `--enable-version3`, `--enable-ffnvcodec` and `--enable-cuda-llvm`. It therefore needs adjacent native DLLs and must not be described as an LGPL-only static bundle.

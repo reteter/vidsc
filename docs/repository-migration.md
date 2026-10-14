@@ -2,9 +2,9 @@
 
 Date: 14 October 2026.
 
-The active project is now `D:\code\codex\vidsc`, with origin
+The active project is now `<REPOSITORY_ROOT>`, with origin
 `https://github.com/reteter/vidsc.git`. The former depot copy at
-`D:\code\codex\artifacts-depo\projects\vidsc` is retained as an archive.
+`<ARCHIVED_REPOSITORY>` is retained as an archive.
 Continue development and the deferred M1 host acceptance in the standalone repository.
 
 ## History and source integrity
