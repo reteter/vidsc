@@ -435,6 +435,7 @@ New-Item -ItemType Directory -Force -Path $sceneStage | Out-Null
 
 $sceneDriverSource = Join-Path $PSScriptRoot 'scene/vidsc_scene_job.py'
 Copy-Item -LiteralPath $sceneDriverSource -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_inspection_job.py') -Destination $sceneStage -Force
 
 # The scene runtime is preferred in its RELOCATABLE form (an official embeddable Python plus
 # project-local wheels, produced by tools/Build-Scene-Runtime.ps1). A legacy virtual environment is
@@ -771,9 +772,9 @@ else {
                     # zero-origin smoke cannot detect an unsupported start_time API or a fabricated
                     # processed count based on the absolute ending position.
                     foreach ($case in @(
-                        @{ Name = 'zero-no-cut'; Start = '0'; Duration = '0.75'; Frames = 18; Last = 17; Scenes = 0 },
+                        @{ Name = 'zero-no-cut'; Start = '0'; Duration = '0.75'; Frames = 18; Last = 17; Scenes = 1 },
                         @{ Name = 'zero-cut'; Start = '0'; Duration = '3'; Frames = 72; Last = 71; Scenes = 2 },
-                        @{ Name = 'nonzero-no-cut'; Start = '2.25'; Duration = '0.5'; Frames = 12; Last = 65; Scenes = 0 },
+                        @{ Name = 'nonzero-no-cut'; Start = '2.25'; Duration = '0.5'; Frames = 12; Last = 65; Scenes = 1 },
                         @{ Name = 'nonzero-cut'; Start = '1'; Duration = '3'; Frames = 72; Last = 95; Scenes = 2 }
                     )) {
                         $caseReport = Join-Path $VerifyRoot ("packaged-scene-{0}.json" -f $case.Name)
@@ -786,12 +787,15 @@ else {
                             continue
                         }
                         $caseJson = Get-Content -LiteralPath $caseReport -Raw | ConvertFrom-Json
-                        if (-not $caseJson.success -or $caseJson.framesProcessed -ne $case.Frames -or
-                            $caseJson.lastProcessedFrame -ne $case.Last -or $caseJson.sceneCount -ne $case.Scenes) {
-                            Add-VerifyFailure "Scene window $($case.Name): frames=$($caseJson.framesProcessed), last=$($caseJson.lastProcessedFrame), scenes=$($caseJson.sceneCount)."
+                        $caseScenes = @($caseJson.scenes).Count
+                        # This generated fixture has an authored 24-fps schedule; production scene times use decoded PTS.
+                        $lastSeconds = $case.Last / 24.0
+                        if (-not $caseJson.success -or $caseJson.schemaVersion -ne 2 -or $caseJson.framesProcessed -ne $case.Frames -or
+                            [Math]::Abs($caseJson.lastProcessedSeconds - $lastSeconds) -gt 0.000001 -or $caseScenes -ne $case.Scenes) {
+                            Add-VerifyFailure "Scene window $($case.Name): frames=$($caseJson.framesProcessed), lastSeconds=$($caseJson.lastProcessedSeconds), scenes=$caseScenes."
                         }
                         else {
-                            Add-StepResult -Step "scene-window-$($case.Name)" -Status 'pass' -Detail "frames=$($caseJson.framesProcessed); last=$($caseJson.lastProcessedFrame); scenes=$($caseJson.sceneCount)"
+                            Add-StepResult -Step "scene-window-$($case.Name)" -Status 'pass' -Detail "frames=$($caseJson.framesProcessed); lastSeconds=$($caseJson.lastProcessedSeconds); scenes=$caseScenes"
                         }
                     }
 

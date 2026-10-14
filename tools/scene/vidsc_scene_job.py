@@ -47,9 +47,12 @@ def main():
         with open(__file__, "rb") as driver:
             driver_hash = hashlib.sha256(driver.read()).hexdigest()
         result["build"] = dict(pyav=version("av"), scenedetect=version("scenedetect"), driver=driver_hash)
-        detector = (ContentDetector(threshold=args.threshold, min_scene_len=args.min_scene_len)
-            if args.detector == "content" else
-            AdaptiveDetector(adaptive_threshold=args.threshold, min_scene_len=args.min_scene_len))
+        parameter = "threshold" if args.detector == "content" else "adaptive_threshold"
+        detector_arguments = {parameter: args.threshold, "min_scene_len": args.min_scene_len}
+        detector = (ContentDetector if args.detector == "content" else AdaptiveDetector)(**detector_arguments)
+        result["detectorConfig"] = dict(parameter=parameter,
+            adaptiveThreshold=detector_arguments.get("adaptive_threshold"),
+            contentThreshold=detector_arguments.get("threshold"), minSceneLenFrames=args.min_scene_len)
         # Sequential decoding avoids backend seek/frame-number assumptions for VFR sources.
         with av.open(args.input) as container:
             stream = next(s for s in container.streams.video if s.index == args.stream)

@@ -9,9 +9,17 @@ public sealed class FrameBoundaryResolverTests
 {
     private static readonly Rational Base = Rational.Create(1, 24000);
     private static RationalTime At(long pts) => new(pts, Base);
-    private static FrameBoundaryResolver Resolver(bool eof = true) => new(new PresentationBoundaryMap(1, 2,
-        new NavigationMap(Base, 50_000_000, [120000, 121001, 123003], [],
-            terminalEndPts: 124004, terminalEndProvenance: "verified fixture duration"), eof));
+    private static FrameBoundaryResolver Resolver(bool eof = true)
+    {
+        var navigation = new NavigationMap(Base, 50_000_000, [120000, 121001, 123003], [],
+            terminalEndPts: 124004, terminalEndProvenance: "fixture duration metadata");
+        if (!eof) return new(new PresentationBoundaryMap(1, 2, navigation));
+        var source = new ProgressiveSourceIdentity("resolver-fixture", 1, 2, Base, 50_000_000);
+        var reference = new IndependentTerminalReference(source, "resolver-vfr-v1", "Authored VFR schedule",
+            [120000, 121001, 123003], 124004);
+        Assert.True(TerminalEndQualification.TryQualify(source, navigation, reference, out var qualification, out _));
+        return new(new PresentationBoundaryMap(source, navigation, qualification!));
+    }
 
     [Theory]
     [InlineData(-1, 121001)]

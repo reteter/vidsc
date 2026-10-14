@@ -7,23 +7,38 @@ public sealed class PresentationBoundaryMap
 {
     private readonly IReadOnlyList<long> _pts;
 
-    public PresentationBoundaryMap(long sourceGeneration, int streamIndex, NavigationMap navigation,
-        bool terminalEndVerified = false)
+    public PresentationBoundaryMap(long sourceGeneration, int streamIndex, NavigationMap navigation)
+        : this(sourceGeneration, streamIndex, navigation, null, null) { }
+
+    public PresentationBoundaryMap(ProgressiveSourceIdentity source, NavigationMap navigation,
+        TerminalEndQualification qualification)
+        : this(source.Generation, source.StreamIndex, navigation,
+            QualifiedEnd(source, navigation, qualification), qualification.Provenance) { }
+
+    private static long QualifiedEnd(ProgressiveSourceIdentity source, NavigationMap navigation,
+        TerminalEndQualification qualification)
+    {
+        ArgumentNullException.ThrowIfNull(qualification);
+        if (!qualification.Matches(source, navigation))
+            throw new ArgumentException("Terminal qualification does not match this source and complete frame map.", nameof(qualification));
+        return qualification.EndPts;
+    }
+
+    private PresentationBoundaryMap(long sourceGeneration, int streamIndex, NavigationMap navigation,
+        long? qualifiedEnd, string? qualifiedProvenance)
     {
         ArgumentNullException.ThrowIfNull(navigation);
         if (!navigation.HasFrameIndex)
             throw new ArgumentException("Presentation boundaries require a complete strictly ordered decoded PTS index.", nameof(navigation));
         if (streamIndex < 0) throw new ArgumentOutOfRangeException(nameof(streamIndex));
-        if (terminalEndVerified && navigation.TerminalEndPts is null)
-            throw new ArgumentException("A verified terminal end requires explicit terminal metadata.", nameof(terminalEndVerified));
         SourceGeneration = sourceGeneration;
         StreamIndex = streamIndex;
         TimeBase = navigation.TimeBase;
         TimelineOriginTicks = navigation.TimelineOriginTicks;
         _pts = navigation.FramePts;
-        TerminalEndPts = terminalEndVerified ? navigation.TerminalEndPts : null;
-        TerminalEndVerified = terminalEndVerified;
-        TerminalEndProvenance = navigation.TerminalEndProvenance;
+        TerminalEndPts = qualifiedEnd;
+        TerminalEndVerified = qualifiedEnd.HasValue;
+        TerminalEndProvenance = qualifiedProvenance;
     }
 
     public long SourceGeneration { get; }

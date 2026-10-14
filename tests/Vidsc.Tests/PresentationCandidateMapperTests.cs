@@ -95,7 +95,10 @@ public sealed class PresentationCandidateMapperTests
         PresentedFrameCandidate candidate = Candidate(tracker) with { OriginalPts = 200, NextOriginalPts = null };
         var navigation = new NavigationMap(candidate.TimeBase, 0, [100, 200], [],
             terminalEndPts: 237, terminalEndProvenance: "synthetic test oracle");
-        var boundaries = new PresentationBoundaryMap(candidate.Generation.Value, 0, navigation, terminalEndVerified: true);
+        var source = new ProgressiveSourceIdentity("candidate-fixture", candidate.Generation.Value, 0, candidate.TimeBase, 0);
+        var reference = new IndependentTerminalReference(source, "candidate-v1", "Authored test frame schedule", [100, 200], 237);
+        Assert.True(TerminalEndQualification.TryQualify(source, navigation, reference, out var qualification, out _));
+        var boundaries = new PresentationBoundaryMap(source, navigation, qualification!);
 
         PresentedFrameCandidate resolved = PresentationCandidateMapper.WithBoundaryMap(candidate, boundaries);
         Assert.Equal(237, resolved.NextOriginalPts);
