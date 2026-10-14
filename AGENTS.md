@@ -2,7 +2,7 @@
 
 ## Scope and sources of truth
 
-- Work in this standalone repository or its owned worktrees. Origin: https://github.com/reteter/vidsc.git. The former projects/vidsc depot copy is archival.
+- Work in this repository or its owned worktrees. Origin: https://github.com/reteter/vidsc.git.
 - GitHub Issues holds current scope, status, dependencies and deferrals; PRs hold proposed changes, reviews and merge state.
 - docs/implementation-plan.md defines requirements and acceptance contracts. docs/implementation-progress.md records verified history; docs/validation/ holds evidence. Do not duplicate current task status or test counts here.
 
@@ -23,8 +23,8 @@
 
 ## Execution boundaries
 
-- Long measurements and active-window tests remain deferred until the user's explicit signal.
-- Implementation scope remains M1 and its tests/retrospective; do not start M2 or later stages without a scope change.
+- Read execution restrictions and authorized scope from the relevant issues and the user's instructions before starting work. Record deferrals and their resumption conditions in issues, not in this file.
+- Work marked deferred or needs:user-signal requires the user's explicit resumption; creating an issue or milestone does not authorize its implementation. If scope or permission is unclear, clarify before the dependent action.
 - Generic continuation, issue labels, review comments and green CI do not lift these restrictions or authorize merge.
 - Use docs/ci.md to choose verification; do not run resource-heavy checks concurrently in one checkout. Do not schedule background monitoring implicitly.
 

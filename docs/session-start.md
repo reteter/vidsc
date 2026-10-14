@@ -23,10 +23,10 @@ built-in delegation models/efforts, minimum relevant verification, branch/PR aut
 user-controlled merging. Repeating those details in the prompt increases the chance of stale rules.
 
 Specify only actual overrides: a concrete issue/PR, a changed scope, or explicit permission to resume
-particular deferred host scenarios. A generic continuation prompt does not authorize host tests,
-M2 implementation or merging. Scope permission does not automatically lift an execution restriction.
+particular deferred scenarios. A generic continuation prompt does not lift issue-specific execution
+restrictions, expand the authorized scope or approve merging. Scope permission does not automatically
+lift an execution restriction.
 
-Until the workflow PR is merged, start from its branch/worktree to load these instructions, or
-explicitly point the new session to that PR for context. Do not create unrelated implementation work
-on the workflow branch: follow the documented branch/worktree isolation policy. After merge, use an
-up-to-date checkout of the default branch or the existing branch owning the selected task.
+Start from an up-to-date checkout of the default branch or the existing branch/worktree owning the
+selected task. If relevant instructions are proposed in an unmerged PR, name that PR explicitly;
+do not treat its branch as the base for unrelated work. Follow the branch/worktree isolation policy.

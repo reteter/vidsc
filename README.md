@@ -3,18 +3,10 @@
 Windows x64 video navigator and trimmer: C# / .NET 10 / WPF / Flyleaf, with a separate FFmpeg tool
 set and a local PySceneDetect/PyAV worker.
 
-**Current state: M0 scaffold + minimal M1 playback prototype with read-only timeline navigation.**
-The application builds, runs and plays video. Optional bounded packet/frame indexing supports
-navigation; exact editing and production export are not implemented. Full M1 and M2–M8 acceptance
-gates remain open. See [implementation progress](docs/implementation-progress.md).
-See [the validation record](docs/validation/2026-10-14-m0-m1.md) for exactly what was measured and
-[the implementation plan](docs/implementation-plan.md) for the full roadmap.
-
-M0 and the runnable prototype have passed native completion checks. The maintained presentation
-hook is qualified for read-only observations: 140/140 visible frame checks, 19/19 lifecycle checks
-and 108/108 exhaustive VFR checks passed; the current unit suite passes 241 tests. See the
-[presentation qualification](docs/validation/2026-10-14-m1-presentation-acceptance.md).
-Full M1 remains pending the complete B1–B6 benchmark set and remaining visual acceptance.
+See [GitHub Issues](https://github.com/reteter/vidsc/issues) for work status, remaining scope and
+execution restrictions, [implementation progress](docs/implementation-progress.md) for dated evidence,
+and [the implementation plan](docs/implementation-plan.md) for requirements and acceptance gates.
+The roadmap describes the intended product; it is not a claim that every feature is available.
 
 The timeline supports click/drag seeking, zoom, Shift-drag panning, Fit and Center playhead.
 Choose **Build keyframes** for packet candidates or **Build frame index** for a complete decoded
@@ -49,7 +41,7 @@ unresolved — see the validation record.
 ## Build and run
 
 ```powershell
-# from the repository root (projects/vidsc)
+# from the repository root
 pwsh -NoProfile -File tools/Build-Release.ps1          # publish, verify and promote Release
 pwsh -NoProfile -File tools/Build-Release.ps1 -Run     # same, then launch the new GUI
 
@@ -74,15 +66,15 @@ pwsh -NoProfile -File tools/Test-CI.ps1 # compile, unit tests, script syntax and
 ```
 
 The navigation script checks deterministic CFR/fractional/VFR/offset timing, bounded indexing and
-damaged-source rejection against the packaged reader. Benchmark tooling and the remaining M1
-experiment are tracked in [implementation progress](docs/implementation-progress.md); a short
+damaged-source rejection against the packaged reader. Benchmark work and execution restrictions
+are tracked in [GitHub Issues](https://github.com/reteter/vidsc/issues); a short
 harness run does not constitute the full performance acceptance suite.
 
 The standalone repository's GitHub Actions workflow runs the same CI entry point on Windows
 for pushes and pull requests. See [CI scope and local-test policy](docs/ci.md). GPU presentation,
 runtime-bundle delivery and real-media benchmarks remain separate checks; green CI alone does
-not complete M1. `tools/Test-Delivery.ps1` is now versioned as the manual B6 scenario; its full
-execution remains deferred with the other host checks.
+not establish media or delivery acceptance. `tools/Test-Delivery.ps1` runs the manual clean-location
+delivery scenario; check its issue for authorization and prerequisites before execution.
 
 ## What the build produces
 

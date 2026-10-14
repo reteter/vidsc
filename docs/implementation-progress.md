@@ -7,7 +7,7 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
-Current status: **M1 presentation sub-gate accepted; full M1 OPEN** for real-media B1–B6 and
+Snapshot at issue-tracking migration (14 October 2026): **M1 presentation sub-gate accepted; full M1 OPEN** for real-media B1–B6 and
 bounded visual/manual acceptance. Latest unit tests: **241/241**. The final visible runs pass
 **140/140** across five fixtures and **19/19** lifecycle checks plus lifecycle actions; earlier
 exhaustive VFR adjacency passes **108/108**. See [presentation acceptance](validation/2026-10-14-m1-presentation-acceptance.md).
@@ -16,11 +16,11 @@ scene windows, application smoke and promotion (`artifacts/m1-qualified-release-
 The B6 `Test-Delivery` scenario has not been run; the Release pipeline does not close it.
 The user completed the supplied HEVC clip's manual playback/audio, timeline/frame-step,
 minimize/restore and readability trial without problems. Playback pauses while minimized.
-At the user's request, remaining visible-window benchmarks are deferred on this host until the
-user explicitly says they have finished working and testing may resume. Do not activate test
-windows or start those runs in the meantime. No schedule or automatic restart is configured.
+At that checkpoint, the user deferred remaining visible-window benchmarks until an explicit
+resumption signal. The corresponding issues record execution restrictions and subsequent decisions;
+this historical snapshot does not grant permission to run tests. No automatic restart was configured.
 Laptop testing was considered and declined for this checkpoint: it would provide a separate
-hardware profile rather than close this host's acceptance. Full M1 remains open; do not start M2.
+hardware profile rather than close this host's acceptance. Full M1 was still open at that checkpoint.
 
 Standalone migration is complete at `D:\code\codex\vidsc`, with origin
 `https://github.com/reteter/vidsc.git`. The user's initialization and all 19 project commits are
@@ -36,6 +36,9 @@ configuration. This adds no native playback or real-media acceptance. See [CI po
 pre-launch setup-failure report path were checked; full B6 remains unrun and deferred.
 
 ## Current workflow
+
+Operational rules live in [AGENTS.md](../AGENTS.md) and [the workflow](github-workflow.md).
+The entries below record their introduction; issues carry subsequent scope and status changes.
 
 Start from the relevant GitHub issue and keep its status, dependencies and evidence current.
 Commit each significant verified increment with `Refs #N` on a `codex/` branch. The user now
@@ -99,7 +102,7 @@ surface lifecycle. Earlier failed runs and corrected causes remain in
 [source hook validation](validation/2026-10-14-source-hook.md). In/Out and export stay disabled
 because interval editing/export are not implemented, rather than because the hook is unproven.
 
-Remaining work in this session is the plan's real-media B1–B6 and bounded visual/manual checks:
+Remaining work recorded at the migration checkpoint was real-media B1–B6 and bounded visual/manual checks:
 dimensions/aspect, rotation/portrait, DPI, fullscreen, popups and focus. B1–B5 harnesses and software
 audio-clock/DXGI/GPU telemetry are implemented; execution is not acceptance. Preserve scenario
 counts/durations and frozen criteria in the [benchmark protocol](validation/2026-10-14-m1-benchmark-protocol.md).
@@ -108,7 +111,8 @@ features. Neither B4 nor B6 requires implementing the later production editor/ex
 
 M2 progressive coverage/dependency classification, M3 export transactions and later accurate-cut
 stages remain future work. The existing CLI copy check is a packaging/contention workload, not the
-M3 exporter. Do not start those stages in this session; stop after M1 and its tests/retrospective.
+M3 exporter. The checkpoint authorized only M1 and its tests/retrospective; consult the issues and
+the user's instructions for later scope decisions.
 
 ## Timeline feedback migration
 
@@ -117,19 +121,23 @@ The 14 October manual-trial feedback is tracked in [#9](https://github.com/retet
 [#11](https://github.com/reteter/vidsc/issues/11) (viewport overview), under the M5a epic
 [#16](https://github.com/reteter/vidsc/issues/16). This does not expand M1 acceptance scope.
 
-## Session continuation
-
-Earlier stop/resume messages were superseded by the latest deferral above. Wait for the user's
-explicit signal before remaining host benchmarks. The scope remains M1 and its tests, followed
-by a retrospective and plan review; do not start M2. Keep `opencode-delegate` unused.
+## Historical environment notes — 14 October 2026
 
 The maintained production source integration is committed under `third_party/FlyleafLib`, with
 informational identity `3.11.11+vidsc.hook.1`. The older isolated experiment remains under ignored
 `artifacts/experiments/m1-hook/` for historical evidence; production does not reference its diagnostic DLLs.
 See [source hook validation](validation/2026-10-14-source-hook.md) for current acceptance evidence.
 
-The user authorizes dedicated test directories and cleanup outside the worktree on C:/E: NVMe
+For that checkpoint, the user authorized dedicated test directories and cleanup outside the worktree on C:/E: NVMe
 (C: approximately 28 GB free, E: over 100 GB at authorization). D: source/app is HDD. Label storage
 and cache state in every timing comparison; use a uniquely owned E: directory and preserve sources.
 The real HEVC source is the `HEVC_MP4` path in the plan. `winapp ui` works outside the sandbox;
 the computer-use plugin is now installed as well. No global settings have been changed.
+
+## Documentation policy refinement
+
+[#22](https://github.com/reteter/vidsc/issues/22) separates durable operating rules from live task
+status. Startup/workflow/CI guidance now refers to issue-specific scope and deferrals instead of
+hard-coded milestone restrictions. README points to issues and dated evidence rather than copying
+test counts. Archive-copy context remains historical migration information. Documentation diff
+checks were used; this change does not resume tests or expand implementation scope.

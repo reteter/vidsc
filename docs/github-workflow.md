@@ -16,9 +16,9 @@ Each open issue has exactly one type and status. Add relevant areas, a milestone
 
 `todo` captures candidate work needing refinement; convert it in place to `task` when scoped. `research` is a bounded experiment with a question and exit criteria. `decision` records a choice and rationale. `epic` groups work and is refined into linked issues before execution. A hook is an integration area, so a hook issue can also be a bug, task or validation.
 
-`backlog` is not yet ready; `ready` is scoped, unblocked and eligible within current authorization; `in-progress` means active work; `blocked` names a concrete dependency; `deferred` means deliberately postponed. Replace the old status on transitions. `needs:user-signal` is an execution restriction independent of priority or milestone. Remove it only after explicit user authorization. All long measurements and active-window tests remain deferred until that signal. Later-stage epics do not authorize starting M2 or later work.
+`backlog` is not yet ready; `ready` is scoped, unblocked and eligible within current authorization; `in-progress` means active work; `blocked` names a concrete dependency; `deferred` means deliberately postponed. Replace the old status on transitions. `needs:user-signal` is an execution restriction independent of priority or milestone. Record the restriction and resumption condition in the issue; remove it only after explicit user authorization. Creating an epic or milestone does not authorize starting its work.
 
-Milestones follow M1, M2, M3, M4a, M4b, M5a, M5b, M6, M7 and M8. No artificial due dates. Close a milestone only after its acceptance gate is evidenced, not merely because its current issue list is empty. Link dependencies explicitly; milestone numbering alone does not define the execution sequence.
+Milestones follow the implementation plan's acceptance stages. No artificial due dates. Close a milestone only after its acceptance gate is evidenced, not merely because its current issue list is empty. Link dependencies explicitly; milestone numbering alone does not define the execution sequence.
 
 Default GitHub labels are retained for compatibility, but use the prefixed vocabulary for project work. Add new labels only for a concrete retrieval need.
 
@@ -33,15 +33,15 @@ Use English. Keep the body proportional to the work, with a goal, scope, accepta
 5. Commit significant verified work using `Refs #N`, push its feature branch and create/update the PR under standing authorization.
 6. Post verification, evidence, commit and PR links. Keep code/document delivery issues open until merge, with `status:in-progress` and an explicit awaiting-user-merge note. Use `Closes #N` in the PR when merging completes the issue. Evidence-only tasks can close upon acceptance. Remove status labels after closure; use not-planned for rejected/duplicate work and link any replacement. Reopening requires a status label again.
 
-The initial migration issue #21 was closed under the earlier local-completion policy; retain that historical record. New delivery issues follow the merge-based closure rule above. If connectivity fails, continue independent authorized work and report the exact pending synchronization.
+Preserve historical closure evidence when workflow policy changes; do not rewrite past results as if the new policy had always applied. If connectivity fails, continue independent authorized work and report the exact pending synchronization.
 
 ## Branches and pull requests
 
-The user grants standing authorization to create/maintain branches, commit, push normally to origin and open/update PRs for significant verified increments. This replaces the earlier requirement to ask before every push. A significant increment is a coherent, reviewable bug fix, feature, validation outcome or workflow/documentation change; do not create a PR per trivial edit or wait for an entire milestone.
+The user grants standing authorization to create/maintain branches, commit, push normally to origin and open/update PRs for significant verified increments. A significant increment is a coherent, reviewable bug fix, feature, validation outcome or workflow/documentation change; do not create a PR per trivial edit or wait for an entire milestone.
 
 1. Inspect status, current branch, relevant issue and open PRs. Fetch origin and confirm the default base (currently `master`). Start `codex/<issue-or-topic>` from current `origin/master`. Preserve existing changes/commits; use a separate checkout when needed. Never reset unrelated work.
 2. Reuse one branch and PR for one coherent scope. Additional review fixes go into that branch. Start independent work from the default branch; make dependent/stacked work explicit rather than silently carrying another PR's changes.
-3. Verify the smallest relevant scope and inspect the final diff. Documentation-only changes use diff/link checks locally; hosted CI still runs. Follow docs/ci.md for code/script/dependency changes. Host tests remain deferred until the user resumes them.
+3. Verify the smallest relevant scope and inspect the final diff. Documentation-only changes use diff/link checks locally; hosted CI still runs. Follow docs/ci.md for code/script/dependency changes. Honor execution restrictions recorded in the issue and user instructions.
 4. Push with upstream tracking and create a PR against the confirmed base. Use a draft while acceptance is incomplete; a normal PR when ready for review. Describe the problem/result, linked issues, verification and material limits. Attach every PR to the current Codex chat. Never push directly to master or force-push.
 5. Follow current-head CI and review results in the active session. Fix in-scope failures and real findings, reply with evidence and resolve addressed threads. Re-run only affected checks or justified failures. Use PR Completion's watcher when using its completion workflow; preserve its cursor/output under ignored artifacts. Do not claim a reviewer approved merely because checks are green. Do not silently add reviewer bots, protection rules or schedules.
 6. At readiness, report the URL, head SHA, CI/review evidence and remaining limits, then await the user's merge decision. No merge, auto-merge or queue enrollment is allowed without explicit approval for that PR and head. Any new head invalidates approval. The user may merge in GitHub; if asking the agent to land, PR Completion's validated landing helper performs the protected action after approval. Never bypass protections or use admin privileges.
@@ -117,7 +117,3 @@ Example payload (replace the complete label set with the target's intended label
 ```
 
 The `labels` field replaces the label set; preserve unrelated labels. Omit fields not being changed. Read back the affected issue after a write and confirm its content/status. On an ambiguous failed create, search before retrying to avoid duplicates. For a network sandbox restriction, request the narrow required tool escalation; do not alter authentication or global settings.
-
-## Initial migration
-
-The initial import tracks B1-B6 individually, remaining bounded visual acceptance, the M1 retrospective, three timeline TODOs, and later-stage epics. Accepted presentation/lifecycle/CI work is referenced through existing evidence instead of recreated as synthetic closed issues. No tests are triggered by creating this backlog.
