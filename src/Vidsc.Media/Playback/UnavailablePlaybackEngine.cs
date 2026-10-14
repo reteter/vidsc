@@ -78,6 +78,8 @@ public sealed class UnavailablePlaybackEngine : IPlaybackEngine
     {
     }
 
+    public void CloseSource() => Positions.BeginSource();
+
     public PlaybackDiagnostics GetDiagnostics() => new(
         Status: PlaybackEngineStatus.Failed,
         EngineStarted: false,

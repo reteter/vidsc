@@ -1,3 +1,5 @@
+using FlyleafLib.MediaPlayer;
+using FlyleafLib.MediaFramework.MediaRenderer;
 using Vidsc.Core.Playback;
 using Vidsc.Core.Navigation;
 
@@ -87,6 +89,9 @@ public interface IPlaybackEngine : IDisposable
     PlaybackDiagnostics GetDiagnostics();
 
     void Stop();
+
+    /// <summary>Closes the source and clears source state while keeping playback devices reusable.</summary>
+    void CloseSource();
 }
 
 /// <summary>
@@ -153,3 +158,7 @@ public sealed record PlaybackDiagnostics(
         return string.Join(Environment.NewLine, lines);
     }
 }
+
+/// <summary>Read-only native benchmark counters; unavailable measurements stay nullable.</summary>
+public sealed record PlaybackBenchmarkTelemetry(AudioClockSnapshot? Audio, GpuMemorySnapshot? GpuMemory,
+    PresentationStatisticsSnapshot? PresentationStatistics, bool SourceClosed, bool EngineDisposed);

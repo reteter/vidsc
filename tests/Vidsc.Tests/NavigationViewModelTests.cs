@@ -311,6 +311,12 @@ public sealed class NavigationViewModelTests
 
         public void Stop() => Status = PlaybackEngineStatus.Ready;
 
+        public void CloseSource()
+        {
+            Positions.BeginSource();
+            Status = PlaybackEngineStatus.Ready;
+        }
+
         public PlaybackDiagnostics GetDiagnostics() => new(
             Status: Status,
             EngineStarted: true,

@@ -1,6 +1,28 @@
-# vidsc — native completion status
+# vidsc — implementation status
 
-Date: 14 October 2026. Scope: M0 runtime bundle and runnable minimal M1 prototype.
+Date: 14 October 2026. Current work: M1 production presentation integration.
+
+Read docs/implementation-progress.md for the current workflow, commits and acceptance state.
+M0 and minimal M1 playback are verified. Read-only zoomable timeline, PTS indexing,
+keyboard/wheel navigation and timecode/frame-index entry are implemented and committed.
+Latest integration build/test: 238 tests passed; native lifecycle rerun pending after fixes.
+The pinned Flyleaf source integration is committed as 6997d5f and exposes raw PTS and
+experimental confirmed present-ID candidates. Exact editing remains disabled. Selected visible
+barcode/PTS/start/end tests pass 52/52 across CFR24, fractional FPS, VFR and HEVC; all adjacent
+VFR pairs pass 108/108. Source-derived boundary maps preserve unknown EOF unless verified.
+First lifecycle acceptance exposed minimize invalidation and pending-request disposal defects;
+fixes, explicit edit-list coverage and before/at/after-boundary seeks are being verified. The edit-list
+test found incorrect early seek landing; playback invalidation recovery is awaiting native retest.
+Software audio-clock/DXGI/GPU telemetry and real contention/cancellation scenarios are implemented;
+full-duration acceptance remains pending. This session stops after M1 and its retrospective; no M2.
+
+B1/B2 baseline on supplied HEVC D: HDD: metadata-open median 176.75 ms fresh process,
+87.92 ms warm; 100/100 callback-correlated seeks, median 84.04 ms / p95 156.35 ms.
+These are advisory timings, not displayed-frame acceptance. See docs/validation records.
+No push, global setting changes or source media mutation. Full M1 remains open; continue
+remaining implementation milestones after its acceptance gates pass.
+
+Historical M0/minimal M1 completion evidence follows (not current test counts):
 
 Result: 120 tests passed; default staged Release build and promotion passed; four promotion rollback tests passed. Fresh spaced Unicode package passed GUI/loaded-native/CLI/scene checks with development Python and FFmpeg removed from PATH. No .NET runtime bundled. Sources and existing CLI outputs retained their hashes. Actual scene windows covered zero and nonzero starts, with and without cuts. Application shutdown completed with an owned scene job active.
 
@@ -10,4 +32,4 @@ Evidence: docs/validation/2026-10-14-m0-m1.md section 13, artifacts/native-final
 
 Full M1 remains pending: presented-frame PTS/end and CFR/VFR/fractional-frame proof, B1–B6 performance/lifecycle, and visual gates. Exact editing remains disabled. M2–M8 not implemented. Native timeout was source-reviewed but a deliberately hung native open was not injected. Redistribution licence clearance unresolved.
 
-Working tree only; no commit/push, global setting changes, or source media mutation.
+Historical evidence predates the later local implementation commits.

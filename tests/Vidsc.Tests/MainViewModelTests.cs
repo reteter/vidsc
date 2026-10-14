@@ -156,6 +156,52 @@ public sealed class MainViewModelTests
         Assert.Equal(1, engine.DisposeCount);
     }
 
+    [Fact]
+    public async Task CancelMediaJobAwaitsTheOwnedScanAndBlocksReplacementUntilItReturns()
+    {
+        AppPaths paths = NewPaths();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            async (_, _, _, _, ct) => { entered.SetResult(); await release.Task; ct.ThrowIfCancellationRequested(); throw new InvalidOperationException(); });
+        try
+        {
+            await vm.OpenAsync(Path.Combine(paths.WorkDirectory, "source.mp4"));
+            vm.BuildFrameIndexCommand.Execute(null);
+            await entered.Task;
+            Task cancel = vm.CancelMediaJobAsync();
+            Assert.False(cancel.IsCompleted);
+            Assert.True(vm.IsMediaJobActive);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => vm.RunBenchmarkMediaJobAsync("copy", 1));
+            release.SetResult();
+            await cancel;
+            Assert.False(vm.IsMediaJobActive);
+        }
+        finally { release.TrySetResult(); await vm.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task UnconfirmedScanExitKeepsTheOwnedSlotBlocked()
+    {
+        AppPaths paths = NewPaths();
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            (_, _, _, _, _) => Task.FromException<Vidsc.Core.Navigation.NavigationMap>(
+                new NavigationProcessStuckException(123, new IOException("termination unconfirmed"))));
+        try
+        {
+            await vm.OpenAsync(Path.Combine(paths.WorkDirectory, "source.mp4"));
+            vm.BuildFrameIndexCommand.Execute(null);
+            await vm.CancelMediaJobAsync();
+            Assert.True(vm.MediaJobStuck);
+            Assert.True(vm.IsMediaJobActive);
+            Assert.False(vm.ToolCheckCommand.CanExecute(null));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => vm.RunBenchmarkMediaJobAsync("copy", 1));
+        }
+        finally { await vm.ShutdownAsync(); }
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         DateTime deadline = DateTime.UtcNow + timeout;
@@ -308,6 +354,12 @@ public sealed class MainViewModelTests
         }
 
         public void Stop() => Status = PlaybackEngineStatus.Ready;
+
+        public void CloseSource()
+        {
+            Positions.BeginSource();
+            Status = PlaybackEngineStatus.Ready;
+        }
 
         public PlaybackDiagnostics GetDiagnostics() => new(
             Status: Status,

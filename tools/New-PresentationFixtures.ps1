@@ -22,7 +22,8 @@ $definitions = @(
     @{ Name='cfr24'; Step=1000; Offset=0; Vfr=$false; Codec='libx264' },
     @{ Name='fractional24000-1001'; Step=1001; Offset=0; Vfr=$false; Codec='libx264' },
     @{ Name='irregular-offset'; Step=1000; Offset=120000; Vfr=$true; Codec='libx264' },
-    @{ Name='hevc-main10'; Step=1001; Offset=0; Vfr=$false; Codec='libx265' }
+    @{ Name='hevc-main10'; Step=1001; Offset=0; Vfr=$false; Codec='libx265' },
+    @{ Name='edit-list-preroll'; Step=1000; Offset=0; Vfr=$false; Codec='libx264'; Preroll=12 }
 )
 $results = @()
 foreach ($d in $definitions) {
@@ -31,7 +32,44 @@ foreach ($d in $definitions) {
     $path = Join-Path $output "$($d.Name).mp4"
     $args = @('-hide_banner','-loglevel','error','-f','lavfi','-i',$(if ($d.Step -eq 1001) {'color=c=gray:s=320x180:r=24000/1001'} else {'color=c=gray:s=320x180:r=24'}),'-vf',"$filter,setpts='$formula'",'-frames:v','48','-an','-c:v',$d.Codec,'-bf','3','-g','24','-threads','2','-pix_fmt',$(if ($d.Codec -eq 'libx265') {'yuv420p10le'} else {'yuv420p'}),'-enc_time_base','1/24000','-fps_mode','passthrough','-video_track_timescale','24000','-avoid_negative_ts','disabled')
     if ($d.Codec -eq 'libx265') { $args += @('-x265-params','pools=1:frame-threads=1:log-level=error') }
-    $null = Invoke-Media $ffmpeg ($args + $path)
+    $editList = $null
+    if ($d.Preroll) {
+        # Hidden negative labels retain decode references across the stream-copy trim.
+        $source = Join-Path $output 'edit-list-source.mp4'
+        $prerollFilter = $filter.Replace('floor(N/pow','floor((N-12)/pow').Replace('FRAME %{n}', 'FRAME %{eif\:n-12\:d}')
+        $args[[Array]::IndexOf($args, '-vf')+1] = "$prerollFilter,setpts='$formula'"
+        $args[[Array]::IndexOf($args, '-frames:v')+1] = '60'
+        $null = Invoke-Media $ffmpeg ($args + $source)
+        $null = Invoke-Media $ffmpeg @('-v','error','-ss','0.5','-i',$source,'-map','0:v:0','-c','copy','-use_editlist','1','-movie_timescale','1000','-avoid_negative_ts','disabled',$path)
+        $untrimmed = (Invoke-Media $ffprobe @('-v','error','-ignore_editlist','1','-select_streams','v:0','-show_frames','-of','json',$path)) | ConvertFrom-Json
+        if ($untrimmed.frames.Count -ne 60) { throw 'Edit-list fixture must retain all sixty media samples.' }
+        for ($n=0; $n -lt 60; $n++) {
+            if ([long]$untrimmed.frames[$n].pts -ne 2000+$n*1000 -or [long]$untrimmed.frames[$n].duration -ne 1000) { throw 'Unedited media timeline differs from the independent 24 fps oracle.' }
+        }
+        # Walk real ISO BMFF box boundaries to prove a nonzero media edit.
+        $mp4 = [IO.File]::ReadAllBytes($path)
+        function Read-U32([int]$At) { return [uint32](([long]$mp4[$At]*16777216)+([long]$mp4[$At+1]*65536)+([long]$mp4[$At+2]*256)+$mp4[$At+3]) }
+        function Find-EditList([int]$Start, [int]$End) {
+            for ($p=$Start; $p -lt $End;) {
+                $size = Read-U32 $p
+                if ($size -lt 8 -or $p+$size -gt $End) { throw 'Invalid MP4 box boundary.' }
+                $type = [Text.Encoding]::ASCII.GetString($mp4,$p+4,4)
+                if ($type -eq 'elst') { return $p }
+                if ($type -in @('moov','trak','edts')) { $found = Find-EditList ($p+8) ($p+$size); if ($found -ge 0) { return $found } }
+                $p += $size
+            }
+            return -1
+        }
+        $elst = Find-EditList 0 $mp4.Length
+        if ($elst -lt 0 -or $mp4[$elst+8] -ne 0 -or (Read-U32 ($elst+12)) -ne 1) { throw 'Expected one version-zero edit-list entry.' }
+        $mediaTime = Read-U32 ($elst+20)
+        # Two reorder ticks plus twelve trimmed frames: 2000 + 12*1000.
+        if ($mediaTime -ne 14000 -or (Read-U32 ($elst+16)) -ne 2000 -or (Read-U32 ($elst+24)) -ne 65536) { throw 'Edit list differs from the expected two-second unit-rate trim.' }
+        $editList = [ordered]@{ boxOffset=$elst; version=0; entryCount=1; movieTimeBase='1/1000'; segmentDurationMovieTicks=2000; mediaTime=$mediaTime; mediaRate=1; ignoredEditListFrameCount=60; uneditedPtsFormula='2000+n*1000, n=0..59'; hiddenPrerollFrames=12; trimTicks=12000; visibleEnd=48000 }
+        Remove-Item -LiteralPath $source
+    } else {
+        $null = Invoke-Media $ffmpeg ($args + $path)
+    }
     $probe = (Invoke-Media $ffprobe @('-v','error','-select_streams','v:0','-show_streams','-show_frames','-of','json',$path)) | ConvertFrom-Json
     $expected = @(0..47 | ForEach-Object {
         $n = $_
@@ -74,7 +112,7 @@ foreach ($d in $definitions) {
         throw 'Oracle accepted deliberately damaged sequence.'
     }
     Remove-Item -LiteralPath $raw
-    $results += [ordered]@{ name=$d.Name; file=$path; codec=$d.Codec; pixelFormat=$probe.streams[0].pix_fmt; bFrames=$probe.streams[0].has_b_frames; frameCount=48; width=320; height=180; timeBase='1/24000'; sourceEpoch=$d.Offset; uiEpoch=0; ptsFormula=$formula; durationFormula=$(if ($d.Vfr) {'[1000,2000,3000][n%3]'} else {"$($d.Step)"}); frames=$expected; barcodeBits=12; barcodeX=16; barcodeY=20; tileWidth=24; tileHeight=60; oracle='packaged FFmpeg full gray decode; tile means; independent index sequence and mathematical PTS'; negativeChecks=$negativeChecks; status='passed' }
+    $results += [ordered]@{ name=$d.Name; editList=$editList; file=$path; codec=$d.Codec; pixelFormat=$probe.streams[0].pix_fmt; bFrames=$probe.streams[0].has_b_frames; frameCount=48; width=320; height=180; timeBase='1/24000'; sourceEpoch=$d.Offset; uiEpoch=0; ptsFormula=$formula; durationFormula=$(if ($d.Vfr) {'[1000,2000,3000][n%3]'} else {"$($d.Step)"}); frames=$expected; barcodeBits=12; barcodeX=16; barcodeY=20; tileWidth=24; tileHeight=60; oracle='packaged FFmpeg full gray decode; tile means; independent index sequence and mathematical PTS'; negativeChecks=$negativeChecks; status='passed' }
 }
 $manifest = [ordered]@{ generatedUtc=[DateTime]::UtcNow.ToString('o'); ffmpeg=$ffmpeg; ffprobe=$ffprobe; version=($version -split "`n")[0]; fixtures=$results }
 $manifest | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $output 'manifest.json') -Encoding utf8

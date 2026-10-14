@@ -167,6 +167,30 @@ public class Audio : NotifyPropertyChanged
     double                  sourceSampleRateTb;
     double                  masterSampleRateTb;
     ulong                   submittedSamples;
+    readonly AudioSampleTimeline sampleTimeline = new();
+    int masterSampleRate;
+
+    public AudioClockSnapshot CaptureClockSnapshot()
+    {
+        lock (locker)
+        {
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            ulong? played = null;
+            uint? latency = null;
+            string reason = null;
+            try
+            {
+                if (sourceVoice != null) played = sourceVoice.State.SamplesPlayed;
+                if (xaudio2 != null) latency = xaudio2.PerformanceData.CurrentLatencyInSamples;
+            }
+            catch (Exception e) { reason = e.GetType().Name; }
+            long? pts = played.HasValue ? sampleTimeline.Map(sampleTimeline.Epoch, played.Value) : null;
+            if (pts == null && reason == null) reason = sourceVoice == null ? "Source voice unavailable" : "Played sample outside submitted map";
+            return new(start, System.Diagnostics.Stopwatch.GetTimestamp(), sampleTimeline.Epoch,
+                sourceVoice != null, masteringVoice != null, played, waveFormat.SampleRate,
+                masterSampleRate, latency, pts, reason, sampleTimeline.Count);
+        }
+    }
     #endregion
 
     public Audio(Player player)
@@ -245,6 +269,7 @@ public class Audio : NotifyPropertyChanged
                 sourceVoice.Start();
 
                 var masterDetails = masteringVoice.VoiceDetails;
+                masterSampleRate = checked((int)masterDetails.InputSampleRate);
 
                 if (CanInfo)
                     player.Log.Info("Audio initialized" +
@@ -268,6 +293,8 @@ public class Audio : NotifyPropertyChanged
     {
         lock (locker)
         {
+            sampleTimeline.Invalidate();
+            masterSampleRate = 0;
             if (xaudio2 == null)
                 return;
 
@@ -294,12 +321,14 @@ public class Audio : NotifyPropertyChanged
 
                 framesDisplayed++;
 
-                submittedSamples += (ulong) (aFrame.dataLen / decoder.AudioDecoder.SampleBytes);
+                ulong count = (ulong) (aFrame.dataLen / decoder.AudioDecoder.SampleBytes);
                 SamplesAdded?.Invoke(this, aFrame);
 
                 audioBuffer.AudioDataPointer= aFrame.dataPtr;
                 audioBuffer.AudioBytes      = (uint)aFrame.dataLen;
                 sourceVoice.SubmitSourceBuffer(audioBuffer);
+                sampleTimeline.Add(submittedSamples, count, aFrame.Timestamp, waveFormat.SampleRate);
+                submittedSamples += count;
             }
             catch (Exception e) // Happens on audio device changed/removed
             {
@@ -336,6 +365,7 @@ public class Audio : NotifyPropertyChanged
     {
         lock (locker)
         {
+            sampleTimeline.Invalidate();
             if (submittedSamples == 0 || sourceVoice == null)
                 return;
 

@@ -113,6 +113,7 @@ public sealed class PlaybackSeekScheduler
         {
             _inFlight = null;
             _unsent = null;
+            _positions.CancelPendingSeek();
         }
     }
 }

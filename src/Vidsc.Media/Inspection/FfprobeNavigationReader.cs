@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Vidsc.Core.Navigation;
+using Vidsc.Media.Tooling;
 
 namespace Vidsc.Media.Inspection;
 
@@ -32,11 +33,11 @@ public sealed class FfprobeNavigationReader
     }
 
     public async Task<NavigationMap> ReadAsync(string path, MediaStreamInfo video, long timelineOriginTicks,
-        bool includeFrames, CancellationToken ct)
+        bool includeFrames, CancellationToken ct, Action<ToolProcessIdentity>? processStarted = null)
     {
         try
         {
-            return await ReadCoreAsync(path, video, timelineOriginTicks, includeFrames, ct).ConfigureAwait(false);
+            return await ReadCoreAsync(path, video, timelineOriginTicks, includeFrames, ct, processStarted).ConfigureAwait(false);
         }
         catch (OperationCanceledException exception) when (!ct.IsCancellationRequested)
         {
@@ -45,7 +46,7 @@ public sealed class FfprobeNavigationReader
     }
 
     private async Task<NavigationMap> ReadCoreAsync(string path, MediaStreamInfo video, long timelineOriginTicks,
-        bool includeFrames, CancellationToken ct)
+        bool includeFrames, CancellationToken ct, Action<ToolProcessIdentity>? processStarted = null)
     {
         if (!video.IsVideo || video.Index < 0 || video.TimeBase is not { IsPositive: true } timeBase)
             throw new ArgumentException("The selected video requires a valid stream index and time base.", nameof(video));
@@ -62,7 +63,7 @@ public sealed class FfprobeNavigationReader
             if (record.Pts is not { } pts) throw new InvalidDataException("A key packet has no usable PTS.");
             if (keys.Count >= _maxKeyframeRecords) throw new InvalidDataException("Navigation key packet limit exceeded; no complete map was produced.");
             keys.Add(pts);
-        }, deadline.Token).ConfigureAwait(false);
+        }, deadline.Token, processStarted).ConfigureAwait(false);
         if (includeFrames)
         {
             int count = 0;
@@ -75,7 +76,7 @@ public sealed class FfprobeNavigationReader
                 if (record.Pts is not { } pts) { unavailable = "A decoded frame has missing or invalid PTS."; return; }
                 if (frames.Count > 0 && pts <= frames[^1]) unavailable = "Decoded frame PTS are duplicated or not strictly increasing.";
                 frames.Add(pts);
-            }, deadline.Token).ConfigureAwait(false);
+            }, deadline.Token, processStarted).ConfigureAwait(false);
         }
         deadline.Token.ThrowIfCancellationRequested();
         long? terminalEnd = null;
@@ -130,7 +131,7 @@ public sealed class FfprobeNavigationReader
         catch (OverflowException) { return null; }
     }
 
-    private async Task ScanAsync(string path, int streamIndex, bool frames, Action<string> accept, CancellationToken ct)
+    private async Task ScanAsync(string path, int streamIndex, bool frames, Action<string> accept, CancellationToken ct, Action<ToolProcessIdentity>? processStarted)
     {
         ct.ThrowIfCancellationRequested();
         var start = new ProcessStartInfo(_executablePath)
@@ -151,6 +152,7 @@ public sealed class FfprobeNavigationReader
         using var cancellation = ct.Register(() => _ = Task.Run(() => Kill(process)));
         try
         {
+            processStarted?.Invoke(new ToolProcessIdentity(process.Id, _executablePath, process.StartTime.ToUniversalTime()));
             // Fixed-size chunks prevent a corrupt or hostile output line from allocating without bound.
             char[] buffer = new char[4096];
             var line = new StringBuilder();

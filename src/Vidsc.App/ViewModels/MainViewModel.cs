@@ -33,6 +33,10 @@ namespace Vidsc.App.ViewModels;
 /// cancellation token that shutdown cancels.</description></item>
 /// </list>
 /// </remarks>
+public sealed record BenchmarkMediaJobResult(string Kind, ToolProcessIdentity? Identity, ToolRunResult? Process,
+    bool Cancelled, bool ExitConfirmed, string? Destination, bool Success = true, string? Error = null,
+    bool CleanupConfirmed = true, string? CleanupError = null);
+
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private const int MaxLogLines = 400;
@@ -62,6 +66,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private Task _transportChain = Task.CompletedTask;
     private Task _mediaJobTask = Task.CompletedTask;
+    private CancellationTokenSource? _mediaJobCancellation;
+    public ToolProcessIdentity? MediaJobProcess { get; private set; }
+    public bool MediaJobStuck => _mediaJobStuck;
     private Task? _shutdownTask;
 
     private CancellationTokenSource? _openCancellation;
@@ -131,6 +138,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             SceneReason = sceneReason ?? "Scene runtime unavailable.";
 
         _engine.StateChanged += OnEngineStateChanged;
+        if (_engine is FlyleafPlaybackEngine playback)
+            playback.PlaybackRestartRequested += OnPlaybackRestartRequested;
 
         _openCommand = new RelayCommand(() => _ = OpenViaDialogAsync(), CanOpen);
         _playPauseCommand = new RelayCommand(PlayPause, () => _isOpened && !_isBusy && !_shutdownRequested);
@@ -183,7 +192,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         long generation = _openToken;
         string path = _sourcePath!;
         SourceMediaInfo info = _mediaInfo!;
-        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        var cancellation = _mediaJobCancellation!;
         _indexCancellation = cancellation;
         CancelIndexCommand.RaiseCanExecuteChanged();
         NavigationReason = includeFrames ? "Building full frame index (whole-file scan)…" : "Building keyframe candidates (explicit scan)…";
@@ -191,7 +200,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             var reader = new FfprobeNavigationReader(_toolset.FfprobePath!);
             NavigationMap map = await (_navigationOverride is null
-                ? reader.ReadAsync(path, info.PrimaryVideo!, info.ContainerStartTicks ?? 0, includeFrames, cancellation.Token)
+                ? reader.ReadAsync(path, info.PrimaryVideo!, info.ContainerStartTicks ?? 0, includeFrames, cancellation.Token, ObserveMediaProcess)
                 : _navigationOverride(path, info.PrimaryVideo!, info.ContainerStartTicks ?? 0, includeFrames, cancellation.Token));
             if (generation != _openToken || cancellation.IsCancellationRequested) return;
             if (!includeFrames && _navigationMap?.HasFrameIndex == true)
@@ -215,7 +224,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException) { if (generation == _openToken) NavigationReason = "Index scan cancelled; build again when needed."; }
         catch (Exception exception) { if (generation == _openToken) NavigationReason = "Index scan failed: " + exception.Message; }
-        finally { _indexCancellation = null; IsMediaJobActive = _mediaJobStuck; CancelIndexCommand.RaiseCanExecuteChanged(); }
+        finally { _indexCancellation = null; EndMediaJob(); CancelIndexCommand.RaiseCanExecuteChanged(); }
     }
 
     public ObservableCollection<string> LogLines { get; } = new();
@@ -419,7 +428,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         previous?.Dispose();
 
         IsBusy = true;
-        _indexCancellation?.Cancel();
+        _mediaJobCancellation?.Cancel();
         await _mediaJobTask.ConfigureAwait(true);
         if (token != _openToken) return;
         if (_shutdownRequested || cancellation.IsCancellationRequested)
@@ -550,6 +559,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         IsMuted = !IsMuted;
         _engine.SetMuted(IsMuted);
+    }
+
+    public void SetPresentationSurfaceAvailable(bool available)
+    {
+        if (_engine is not FlyleafPlaybackEngine engine) return;
+        engine.SetPresentationSurfaceAvailable(available);
+        EnqueueTransport(available ? "SURFACE restored" : "SURFACE minimized",
+            () => engine.ApplyPresentationSurfaceTransition(available));
     }
 
     public void SetRotation(int degrees)
@@ -792,7 +809,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         _openCancellation?.Cancel();
-        _indexCancellation?.Cancel();
+        _mediaJobCancellation?.Cancel();
 
         // Cancellation requests termination; awaiting the job confirms its owned child has exited.
         await _mediaJobTask.ConfigureAwait(false);
@@ -813,6 +830,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         _engine.StateChanged -= OnEngineStateChanged;
+        if (_engine is FlyleafPlaybackEngine playback)
+            playback.PlaybackRestartRequested -= OnPlaybackRestartRequested;
 
         await Task.Run(() =>
         {
@@ -837,6 +856,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             // Ignore.
         }
+    }
+
+    private void OnPlaybackRestartRequested(object? sender, EventArgs args)
+    {
+        if (sender is FlyleafPlaybackEngine engine)
+            EnqueueTransport("PRESENTATION playback recovery", engine.RestartInvalidatedPlayback);
     }
 
     private void EnqueueTransport(string label, Action action)
@@ -882,6 +907,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return false;
 
         _mediaJobRunCount++;
+        _mediaJobCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        MediaJobProcess = null;
         IsMediaJobActive = true;
         return true;
     }
@@ -892,8 +919,138 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return false;
 
         _mediaJobRunCount++;
+        _mediaJobCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        MediaJobProcess = null;
         IsMediaJobActive = true;
         return true;
+    }
+
+    private void ObserveMediaProcess(ToolProcessIdentity identity) => MediaJobProcess = identity;
+
+    private void ConfirmMediaProcess(ToolRunResult result)
+    {
+        if (result.Started && !result.ExitConfirmed)
+        {
+            _mediaJobStuck = true;
+            throw new IOException($"Owned process {result.ProcessId} has not confirmed exit; media jobs remain blocked.");
+        }
+    }
+
+    private void EndMediaJob()
+    {
+        _mediaJobCancellation?.Dispose();
+        _mediaJobCancellation = null;
+        IsMediaJobActive = _mediaJobStuck;
+    }
+
+    public async Task CancelMediaJobAsync()
+    {
+        _mediaJobCancellation?.Cancel();
+        await _mediaJobTask;
+    }
+
+    public Task<BenchmarkMediaJobResult> RunBenchmarkMediaJobAsync(string kind, double durationSeconds,
+        Action<ToolProcessIdentity>? processStarted = null)
+    {
+        if (kind is not ("frame-scan" or "scene" or "copy")) throw new ArgumentException("Unknown media job kind.", nameof(kind));
+        if (kind == "scene" && _sceneWorker is null) throw new InvalidOperationException("Scene runtime unavailable.");
+        if (kind == "frame-scan" && _mediaInfo?.PrimaryVideo is null) throw new InvalidOperationException("No video stream.");
+        if (!TryBeginMediaJob()) throw new InvalidOperationException("The owned media job slot is unavailable.");
+        Task<BenchmarkMediaJobResult> task = RunBenchmarkMediaJobCoreAsync(kind, durationSeconds, processStarted);
+        _mediaJobTask = task;
+        return task;
+    }
+
+    private async Task<BenchmarkMediaJobResult> RunBenchmarkMediaJobCoreAsync(string kind, double durationSeconds,
+        Action<ToolProcessIdentity>? processStarted)
+    {
+        CancellationToken token = _mediaJobCancellation!.Token;
+        ToolRunResult? process = null;
+        bool success = true;
+        string? error = null;
+        string? destination = null;
+        CliCopyExportJob? ownedCopy = null;
+        BenchmarkMediaJobResult Finish(BenchmarkMediaJobResult result)
+        {
+            if (ownedCopy is null) return result;
+            // Only the destination created by this job is owned; an unconfirmed child may still write it.
+            if (_mediaJobStuck || (process is null && MediaJobProcess is not null))
+                return result with { CleanupConfirmed = false, CleanupError = "Owned child exit is unconfirmed; output retained." };
+            try
+            {
+                File.Delete(ownedCopy.Destination);
+                Directory.Delete(ownedCopy.Directory, recursive: false);
+                return result;
+            }
+            catch (Exception exception)
+            {
+                return result with { Success = false, CleanupConfirmed = false,
+                    CleanupError = exception.Message, Error = "Owned copy cleanup failed: " + exception.Message };
+            }
+        }
+        void Started(ToolProcessIdentity identity) { ObserveMediaProcess(identity); processStarted?.Invoke(identity); }
+        try
+        {
+            if (kind == "frame-scan")
+                await new FfprobeNavigationReader(_toolset.FfprobePath!).ReadAsync(_sourcePath!,
+                    _mediaInfo!.PrimaryVideo!, _mediaInfo.ContainerStartTicks ?? 0, true, token, Started);
+            else if (kind == "scene")
+            {
+                SceneJobResult result = await _sceneWorker!.RunAsync(_sourcePath!, 0, durationSeconds, "content", token,
+                    TimeSpan.FromHours(2), Started);
+                process = result.Process;
+                success = result.Success;
+                error = result.Error;
+            }
+            else
+            {
+                var checker = new PackagedCliCheck(_ffmpeg!, _paths.CacheDirectory);
+                CliCopyExportJob job = checker.CreateCopyExportJob(_sourcePath!, TimeSpan.Zero, TimeSpan.FromSeconds(durationSeconds));
+                ownedCopy = job;
+                destination = job.Destination;
+                process = await _ffmpeg!.RunAsync(job.Arguments, token, TimeSpan.FromHours(2), Started);
+            }
+            if (process is { Started: true, ExitConfirmed: false }) _mediaJobStuck = true;
+            return Finish(new BenchmarkMediaJobResult(kind, MediaJobProcess, process, token.IsCancellationRequested, !_mediaJobStuck, destination, success && (process?.Succeeded ?? true), error));
+        }
+        catch (NavigationProcessStuckException exception)
+        { _mediaJobStuck = true; return Finish(new BenchmarkMediaJobResult(kind, MediaJobProcess, process, token.IsCancellationRequested, false, destination, false, exception.Message)); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        { return Finish(new BenchmarkMediaJobResult(kind, MediaJobProcess, process, true, true, destination, false, "Cancelled")); }
+        catch (Exception exception)
+        { return Finish(new BenchmarkMediaJobResult(kind, MediaJobProcess, process, token.IsCancellationRequested, !_mediaJobStuck, destination, false, exception.Message)); }
+        finally { EndMediaJob(); }
+    }
+
+    public async Task CloseSourceAsync()
+    {
+        ++_openToken;
+        _openCancellation?.Cancel();
+        IsBusy = true;
+        try
+        {
+            await CancelMediaJobAsync();
+            Task transport;
+            lock (_transportLock) transport = _transportChain;
+            await transport;
+            await Task.Run(_engine.CloseSource);
+            _sourcePath = null;
+            _mediaInfo = null;
+            _navigationMap = null;
+            _durationTicks = 0;
+            _navigationTarget = 0;
+            _navigationTargetOwned = false;
+            IsOpened = false;
+            IsPlaying = false;
+            SetDesiredTicks(0, moveSlider: true, ownTarget: false);
+            SourceSummary = "No source opened.";
+            NavigationReason = _mediaJobStuck ? "Owned child exit unconfirmed; media jobs blocked." : "No source opened.";
+            OnPropertyChanged(nameof(KeyframeTicks));
+            OnPropertyChanged(nameof(SourceFactsText));
+            OnPropertyChanged(nameof(SliderMaximumTicks));
+            StatusLine = "Source closed.";
+        }
+        finally { IsBusy = false; }
     }
 
     private async Task OpenViaDialogAsync()
@@ -985,21 +1142,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            CancellationToken token = _lifetime.Token;
+            CancellationToken token = _mediaJobCancellation!.Token;
 
-            (ToolRunResult ffmpeg, ToolRunResult ffprobe) = await _ffmpeg!.GetVersionsAsync(token).ConfigureAwait(true);
+            (ToolRunResult ffmpeg, ToolRunResult ffprobe) = await _ffmpeg!.GetVersionsAsync(token, ObserveMediaProcess).ConfigureAwait(true);
+            ConfirmMediaProcess(ffmpeg);
+            ConfirmMediaProcess(ffprobe);
             AppendLog("TOOL ffmpeg " + FirstLine(ffmpeg.StandardOutput) + " exit=" + ffmpeg.ExitCode);
             AppendLog("TOOL ffprobe " + FirstLine(ffprobe.StandardOutput) + " exit=" + ffprobe.ExitCode);
 
-            ToolRunResult probe = await _ffmpeg.ProbeJsonAsync(_sourcePath!, token).ConfigureAwait(true);
+            ToolRunResult probe = await _ffmpeg.ProbeJsonAsync(_sourcePath!, token, ObserveMediaProcess).ConfigureAwait(true);
+            ConfirmMediaProcess(probe);
             AppendLog("TOOL probe exit=" + probe.ExitCode + " bytes=" + probe.StandardOutput.Length);
 
             // The copy goes to a unique owned job directory with a no-clobber destination; the source
             // and any previously produced output are never deleted or overwritten.
             var checker = new PackagedCliCheck(_ffmpeg, _paths.CacheDirectory);
             CliCopyExportJob job = checker.CreateCopyExportJob(_sourcePath!, TimeSpan.Zero, TimeSpan.FromSeconds(1));
-            CliCopyExportResult export = await checker.RunCopyExportAsync(job, token).ConfigureAwait(true);
+            CliCopyExportResult export = await checker.RunCopyExportAsync(job, token, ObserveMediaProcess).ConfigureAwait(true);
 
+            ConfirmMediaProcess(export.Process);
             AppendLog("TOOL copy-export exit=" + export.Process.ExitCode + " -> " + export.Destination
                 + (export.DestinationCreated ? $" ({export.DestinationBytes} bytes)" : " (no output)")
                 + (export.SourceUnchanged ? "" : " SOURCE CHANGED!"));
@@ -1027,7 +1188,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            IsMediaJobActive = false;
+            EndMediaJob();
         }
     }
 
@@ -1039,9 +1200,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try
         {
             SceneJobResult result = await _sceneWorker!
-                .RunAsync(_sourcePath!, 0, 3, "content", _lifetime.Token)
+                .RunAsync(_sourcePath!, 0, 3, "content", _mediaJobCancellation!.Token, processStarted: ObserveMediaProcess)
                 .ConfigureAwait(true);
 
+            if (result.Process is { } process) ConfirmMediaProcess(process);
             AppendLog("SCENE " + result.Describe());
 
             foreach (SceneProposal scene in result.Scenes.Take(10))
@@ -1067,7 +1229,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            IsMediaJobActive = false;
+            EndMediaJob();
         }
     }
 

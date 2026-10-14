@@ -371,8 +371,12 @@ public unsafe class SwapChain
         {
             if (Disposed || sc == null) return;
             try {
+            long readStart = System.Diagnostics.Stopwatch.GetTimestamp();
             var hr = sc.GetFrameStatistics(out var statistics);
-            Renderer.Presentation.Statistics(hr.Code, statistics.PresentCount, System.Diagnostics.Stopwatch.GetTimestamp());
+            long readEnd = System.Diagnostics.Stopwatch.GetTimestamp();
+            Renderer.Presentation.RecordStatistics(hr.Code, statistics.PresentCount, statistics.PresentRefreshCount,
+                statistics.SyncRefreshCount, statistics.SyncQPCTime, readStart, readEnd);
+            Renderer.Presentation.Statistics(hr.Code, statistics.PresentCount, readEnd);
             } catch (Exception e) { Renderer.Presentation.Invalidate($"Statistics poll: {e.GetType().Name}"); }
         }
     }

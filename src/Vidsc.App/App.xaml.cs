@@ -102,7 +102,11 @@ public partial class App : Application
                 : "NOT started: " + engineReport.Error));
             viewModel.AppendLog("Toolset: " + paths.ApplicationDirectory);
 
-            if (options.Benchmark is not null)
+            if (options.PresentationCheck)
+            {
+                _ = RunPresentationAsync(options, viewModel, engine);
+            }
+            else if (options.Benchmark is not null)
             {
                 _ = RunBenchmarkAsync(options, viewModel, engine);
             }
@@ -132,6 +136,13 @@ public partial class App : Application
         {
             viewModel.AppendLog("BENCHMARK EXCEPTION " + exception);
         }
+        await RequestShutdownAsync(exitCode);
+    }
+    private async Task RunPresentationAsync(CommandLineOptions options, MainViewModel viewModel, IPlaybackEngine engine)
+    {
+        int exitCode = 2;
+        try { exitCode = await new PresentationCheckRunner(options, viewModel, engine, _window!).RunAsync(); }
+        catch (Exception exception) { viewModel.AppendLog("PRESENTATION EXCEPTION " + exception); }
         await RequestShutdownAsync(exitCode);
     }
     private async Task RunSmokeAsync(

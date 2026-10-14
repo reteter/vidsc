@@ -92,7 +92,7 @@ public sealed class SceneWorker
         double durationSeconds,
         string detector,
         CancellationToken cancellationToken,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
 
@@ -114,13 +114,16 @@ public sealed class SceneWorker
         ];
 
         ToolRunResult run = await ToolProcessRunner
-            .RunAsync(_pythonPath, arguments, timeout ?? DefaultTimeout, cancellationToken)
+            .RunAsync(_pythonPath, arguments, timeout ?? DefaultTimeout, cancellationToken, processStarted)
             .ConfigureAwait(false);
+
+        if (run.Started && !run.ExitConfirmed)
+            return new SceneJobResult(false, "Owned scene process exit is unconfirmed.", source, null, null, null, null, null, Array.Empty<SceneProposal>(), run, null);
 
         string? json = null;
         if (File.Exists(reportPath))
         {
-            json = await File.ReadAllTextAsync(reportPath, cancellationToken).ConfigureAwait(false);
+            json = await File.ReadAllTextAsync(reportPath, CancellationToken.None).ConfigureAwait(false);
             TryDelete(reportPath);
         }
         else if (!string.IsNullOrWhiteSpace(run.StandardOutput))

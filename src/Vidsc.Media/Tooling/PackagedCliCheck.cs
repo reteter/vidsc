@@ -70,15 +70,18 @@ public sealed class PackagedCliCheck
     }
 
     /// <summary>Runs the job and verifies that the source file was not modified.</summary>
-    public async Task<CliCopyExportResult> RunCopyExportAsync(CliCopyExportJob job, CancellationToken cancellationToken)
+    public async Task<CliCopyExportResult> RunCopyExportAsync(CliCopyExportJob job, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
         ArgumentNullException.ThrowIfNull(job);
 
         string hashBefore = await HashFileAsync(job.Source, cancellationToken).ConfigureAwait(false);
 
-        ToolRunResult run = await _cli.RunAsync(job.Arguments, cancellationToken).ConfigureAwait(false);
+        ToolRunResult run = await _cli.RunAsync(job.Arguments, cancellationToken, processStarted: processStarted).ConfigureAwait(false);
 
-        string hashAfter = await HashFileAsync(job.Source, cancellationToken).ConfigureAwait(false);
+        // Preserve the process cleanup result even when cancellation interrupted the job.
+        string hashAfter;
+        try { hashAfter = await HashFileAsync(job.Source, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { hashAfter = "cancelled"; }
 
         bool created = File.Exists(job.Destination);
         long bytes = created ? new FileInfo(job.Destination).Length : 0;

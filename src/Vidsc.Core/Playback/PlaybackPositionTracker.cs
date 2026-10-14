@@ -338,6 +338,17 @@ public sealed class PlaybackPositionTracker
             InvalidatePresentationCore();
     }
 
+    /// <summary>Cancels transport ownership without fabricating an engine completion.</summary>
+    public void CancelPendingSeek()
+    {
+        lock (_gate)
+        {
+            _pending = null;
+            _seekState = PlaybackSeekState.None;
+            InvalidatePresentationCore();
+        }
+    }
+
     private void InvalidatePresentationCore()
     {
         _presentationEpoch = checked(_presentationEpoch + 1);

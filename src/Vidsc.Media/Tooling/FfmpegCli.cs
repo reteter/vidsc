@@ -36,23 +36,24 @@ public sealed class FfmpegCli
         return new FfmpegCli(toolset.FfmpegPath!, toolset.FfprobePath!);
     }
 
-    public Task<ToolRunResult> RunAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null)
-        => ToolProcessRunner.RunAsync(FfmpegPath, arguments.ToList(), timeout ?? DefaultTimeout, cancellationToken);
+    public Task<ToolRunResult> RunAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null)
+        => ToolProcessRunner.RunAsync(FfmpegPath, arguments.ToList(), timeout ?? DefaultTimeout, cancellationToken, processStarted);
 
-    public Task<ToolRunResult> RunProbeAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null)
-        => ToolProcessRunner.RunAsync(FfprobePath, arguments.ToList(), timeout ?? DefaultTimeout, cancellationToken);
+    public Task<ToolRunResult> RunProbeAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null)
+        => ToolProcessRunner.RunAsync(FfprobePath, arguments.ToList(), timeout ?? DefaultTimeout, cancellationToken, processStarted);
 
     /// <summary>Returns the exact CLI identity of both tools.</summary>
-    public async Task<(ToolRunResult Ffmpeg, ToolRunResult Ffprobe)> GetVersionsAsync(CancellationToken cancellationToken)
+    public async Task<(ToolRunResult Ffmpeg, ToolRunResult Ffprobe)> GetVersionsAsync(CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
-        ToolRunResult ffmpeg = await RunAsync(["-hide_banner", "-version"], cancellationToken, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
-        ToolRunResult ffprobe = await RunProbeAsync(["-hide_banner", "-version"], cancellationToken, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        ToolRunResult ffmpeg = await RunAsync(["-hide_banner", "-version"], cancellationToken, TimeSpan.FromSeconds(30), processStarted).ConfigureAwait(false);
+        if (ffmpeg.Started && !ffmpeg.ExitConfirmed) return (ffmpeg, ffmpeg);
+        ToolRunResult ffprobe = await RunProbeAsync(["-hide_banner", "-version"], cancellationToken, TimeSpan.FromSeconds(30), processStarted).ConfigureAwait(false);
 
         return (ffmpeg, ffprobe);
     }
 
     /// <summary>Machine-readable probe of a single path.</summary>
-    public Task<ToolRunResult> ProbeJsonAsync(string path, CancellationToken cancellationToken)
+    public Task<ToolRunResult> ProbeJsonAsync(string path, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
@@ -66,7 +67,7 @@ public sealed class FfmpegCli
             path,
         ];
 
-        return RunProbeAsync(arguments, cancellationToken);
+        return RunProbeAsync(arguments, cancellationToken, processStarted: processStarted);
     }
 
     /// <summary>

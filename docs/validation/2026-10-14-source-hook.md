@@ -25,7 +25,7 @@ evidence lost during an initial resize without retagging an old callback.
 
 ## Verified so far
 
-- Source integration compiles; **213 tests pass**, including the actual correlator's baseline,
+- Source integration, lifecycle and benchmark harness compile; **238 tests pass**, including the actual correlator's baseline,
   wraparound, reset, stale-source, timeout, bounded-map, overflow and callback-disposal regressions.
 - Release staging/native/CLI/scene/application smoke and promotion pass. The observed manifest
   identifies the custom managed build. Log: `artifacts/source-hook-release-build.log`.
@@ -38,7 +38,23 @@ evidence lost during an initial resize without retagging an old callback.
   frame used nominal frame-number math; capture could begin before a second submit of the same
   frame was confirmed. Explicit barrier/re-render, map stepping and settled-ID capture corrected
   those cases. Reports under `hook-first-visible` and `hook-refresh-cfr` are failed historical runs.
+- `tools/Test-Presentation.ps1 -FixtureName irregular-offset -ExhaustiveSteps -RunId hook-vfr-all-pairs`:
+  **108/108 checks pass**, covering every adjacent forward/backward pair with independent visible
+  identity, raw PTS and normalized start/end checks.
+- First actual lifecycle run `hook-lifecycle-first` fails two genuine cleanup cases: minimize keeps
+  the old presentation candidate, and disposal leaves the pending request in the tracker. A source
+  switch A→B→A, burst/pause and resize produced fresh visible evidence in that run. Fixes and a
+  new complete lifecycle run are required before acceptance.
+- Subsequent lifecycle runs pass the 18 selected paused/source-switch/resize captures and cleanup
+  assertions. Playing minimize/restore exposed a frozen playback token after native invalidation;
+  a serialized pause/play scheduling barrier is implemented and awaits a new native run.
+- The five-fixture boundary run `hook-boundaries-five` is **failed historical evidence**: CFR passes
+  28/28, but other cases lose DXGI confirmations and the explicit edit-list fixture exposes an early
+  seek landing at visible frame 12 instead of frame 0. Visual runs now keep their own test window
+  visible to exclude full occlusion as an uncontrolled variable. The edit-list landing defect still
+  requires correction; the mathematical oracle is not changed to match the player.
 
-Exhaustive adjacent VFR checks, actual source-switch/reset/lifecycle checks and complete B1–B6
-acceptance remain in progress. This foundation does not complete M1. `IsProven=false`, the adapter
+Before/at/after-boundary seeks, an explicit edit-list fixture, complete lifecycle checks and B1–B6
+acceptance remain in progress. Queued callbacks also require synchronous native freshness checks
+before future qualification. This foundation does not complete M1. `IsProven=false`, the adapter
 still reports `AdvisoryOnly`, and exact editing remains disabled.

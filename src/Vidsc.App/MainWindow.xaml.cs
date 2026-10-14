@@ -17,6 +17,8 @@ public partial class MainWindow : Window
     private bool _shutdownComplete;
     private Window? _navigationSurface;
 
+    internal IntPtr PlaybackSurfaceHandle => Host.SurfaceHandle;
+
 
     public MainWindow(MainViewModel viewModel, Player? player)
     {
@@ -39,6 +41,7 @@ public partial class MainWindow : Window
         // handling them before Flyleaf's bubbling bindings prevents conflicting actions.
         Host.SurfaceCreated += OnNavigationSurfaceCreated;
         AttachNavigationSurface();
+        StateChanged += (_, _) => _viewModel.SetPresentationSurfaceAvailable(WindowState != WindowState.Minimized);
 
         Timeline.ScrubStarted += _viewModel.BeginScrub;
         Timeline.ScrubMoved += _viewModel.ScrubTo;

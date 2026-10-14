@@ -2,6 +2,8 @@ using System.Diagnostics;
 
 namespace Vidsc.Media.Tooling;
 
+public sealed record ToolProcessIdentity(int ProcessId, string ExecutablePath, DateTimeOffset StartedAtUtc);
+
 /// <summary>
 /// Result of a bounded external tool invocation.
 /// </summary>
@@ -49,10 +51,12 @@ public static class ToolProcessRunner
         string executablePath,
         IReadOnlyList<string> arguments,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<ToolProcessIdentity>? processStarted = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentNullException.ThrowIfNull(arguments);
+        cancellationToken.ThrowIfCancellationRequested();
 
         var startInfo = new ProcessStartInfo
         {
@@ -91,12 +95,14 @@ public static class ToolProcessRunner
 
         try
         {
+            processStarted?.Invoke(new ToolProcessIdentity(process.Id, executablePath, process.StartTime.ToUniversalTime()));
             await process.WaitForExitAsync(linkedSource.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (Exception failure)
         {
             timedOut = timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested;
             cancelled = cancellationToken.IsCancellationRequested;
+            if (failure is not OperationCanceledException) cancelled = true;
             TryKillTree(process);
 
             // Give the killed process a bounded window to flush and exit.
@@ -175,7 +181,7 @@ public static class ToolProcessRunner
     {
         try
         {
-            return await task.ConfigureAwait(false);
+            return await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         }
         catch (Exception exception)
         {

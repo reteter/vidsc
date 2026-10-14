@@ -120,6 +120,8 @@ public sealed class PlaybackSeekSchedulerTests
         scheduler.Reset();
 
         Assert.False(scheduler.HasInFlight);
+        Assert.Null(tracker.Snapshot().PendingRequestId);
+        Assert.Equal(PlaybackSeekState.None, tracker.Snapshot().SeekState);
         Assert.Equal(0, scheduler.UnsentCount);
         Assert.Null(scheduler.Complete(Ticks(10_000), success: true));
         Assert.False(tracker.Snapshot().ExactBoundariesEligible);

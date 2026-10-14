@@ -4,6 +4,14 @@ namespace Vidsc.Tests;
 
 public sealed class BenchmarkOptionsTests
 {
+    [Fact]
+    public void ContentionHasSeparateFrozenDurationAndExplicitSmokeOverride()
+    {
+        var protocol = CommandLineOptions.Parse(["--benchmark", "contention", "--media", "clip.mp4", "--report", "new-contention-report.json"]);
+        var smoke = CommandLineOptions.Parse(["--benchmark", "contention", "--duration-seconds", "2", "--media", "clip.mp4", "--report", "new-contention-report.json"]);
+        Assert.Equal(300, protocol.BenchmarkDurationSeconds);
+        Assert.Equal(2, smoke.BenchmarkDurationSeconds);
+    }
     [Theory]
     [InlineData("open")]
     [InlineData("seek")]

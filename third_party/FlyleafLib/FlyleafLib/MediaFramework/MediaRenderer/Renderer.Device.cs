@@ -47,6 +47,38 @@ public unsafe partial class Renderer : NotifyPropertyChanged
     internal IDXGIAdapter       DXGIAdapter     { get; private set; }
     public GPUAdapter           GPUAdapter      => gpuAdapter;
     GPUAdapter gpuAdapter;
+    public GpuMemorySnapshot CaptureGpuMemorySnapshot()
+    {
+        lock (lockDevice)
+        {
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            long? luid = null;
+            string name = null, reason = null;
+            GpuMemorySegmentSnapshot local = null, nonLocal = null;
+            try
+            {
+                if (DXGIDevice == null) reason = "DXGI device unavailable";
+                else
+                {
+                    using var adapter = DXGIDevice.GetAdapter();
+                    var description = adapter.Description;
+                    luid = description.Luid;
+                    name = description.Description;
+                    using var adapter3 = adapter.QueryInterfaceOrNull<IDXGIAdapter3>();
+                    if (adapter3 == null) reason = "IDXGIAdapter3 unavailable";
+                    else
+                    {
+                        var l = adapter3.QueryVideoMemoryInfo(0, MemorySegmentGroup.Local);
+                        local = new(l.Budget, l.CurrentUsage, l.CurrentReservation, l.AvailableForReservation);
+                        var n = adapter3.QueryVideoMemoryInfo(0, MemorySegmentGroup.NonLocal);
+                        nonLocal = new(n.Budget, n.CurrentUsage, n.CurrentReservation, n.AvailableForReservation);
+                    }
+                }
+            }
+            catch (Exception e) { reason = e.GetType().Name + ": " + e.Message; }
+            return new(start, System.Diagnostics.Stopwatch.GetTimestamp(), device != null, luid, name, local, nonLocal, reason);
+        }
+    }
     ID3D11DeviceContext     context;
     internal void UnsetRenderTargets() => context?.UnsetRenderTargets();
     bool                    forceWarp;

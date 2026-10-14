@@ -10,6 +10,39 @@ namespace Vidsc.Tests;
 public sealed class ToolProcessRunnerTests
 {
     [Fact]
+    public async Task StartedCallbackIdentifiesTheLiveOwnedProcessBeforeCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        ToolProcessIdentity? identity = null;
+        ToolRunResult result = await ToolProcessRunner.RunAsync(
+            Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+            ["/c", "ping -n 30 127.0.0.1 > NUL"], TimeSpan.FromMinutes(1), cancellation.Token,
+            started =>
+            {
+                identity = started;
+                using var process = System.Diagnostics.Process.GetProcessById(started.ProcessId);
+                Assert.False(process.HasExited);
+                cancellation.Cancel();
+            });
+        Assert.NotNull(identity);
+        Assert.Equal(identity.ProcessId, result.ProcessId);
+        Assert.True(result.Cancelled);
+        Assert.True(result.ExitConfirmed);
+    }
+
+    [Fact]
+    public async Task PreCancelledJobDoesNotStartAProcess()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        bool started = false;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ToolProcessRunner.RunAsync(
+            Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe", ["/c", "exit 0"],
+            TimeSpan.FromSeconds(5), cancellation.Token, _ => started = true));
+        Assert.False(started);
+    }
+
+    [Fact]
     public async Task RunAsync_CancellationTerminatesTheOwnedProcessTreePromptly()
     {
         string comspec = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";

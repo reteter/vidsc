@@ -13,6 +13,29 @@ public sealed class PlaybackPositionTrackerTests
 {
     private static RationalTime Ticks(long value) => new(value, TimeBases.Ticks);
 
+    [Fact]
+    public void ClosingSourceGenerationClearsOwnedStateAndRejectsOldCallbacks()
+    {
+        var tracker = new PlaybackPositionTracker();
+        var oldGeneration = tracker.BeginSource();
+        var request = tracker.RequestSeek(Ticks(100), accurate: true);
+        tracker.SetDesired(Ticks(100));
+        tracker.ReportAdvisoryPosition(Ticks(100), oldGeneration);
+        var closedGeneration = tracker.BeginSource();
+        var closed = tracker.Snapshot();
+        Assert.NotEqual(oldGeneration, closedGeneration);
+        Assert.Null(closed.Desired);
+        Assert.Null(closed.LastRequest);
+        Assert.Null(closed.PendingRequestId);
+        Assert.Null(closed.AdvisoryReported);
+        Assert.Null(closed.ObservedPresentation);
+        Assert.False(closed.ExactBoundariesEligible);
+        Assert.False(tracker.CompleteSeek(new SeekCompletion(request.Id, oldGeneration, Ticks(100), true, true)));
+        Assert.False(tracker.ReportAdvisoryPosition(Ticks(100), oldGeneration));
+        Assert.Null(tracker.Snapshot().LastCompletion);
+        Assert.Null(tracker.Snapshot().AdvisoryReported);
+    }
+
     [Theory]
     [InlineData(10, 10)]
     [InlineData(20, 10)]

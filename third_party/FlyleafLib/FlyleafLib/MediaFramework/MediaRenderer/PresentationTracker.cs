@@ -15,6 +15,8 @@ public sealed record PresentationDiagnostics(long StagedSourceGeneration, long A
     int PendingCount, uint LastSubmitted, uint LastConfirmed, long RejectedSubmits, string? LastRejection,
     long Confirmations, string? LastInvalidation);
 public sealed record PresentationInvalidation(string Reason, PresentationOperation Operation, long SwapChainEpoch);
+public sealed record PresentationStatisticsSnapshot(long SwapChainEpoch, int HResult, long ReadQpcStart,
+    long ReadQpcEnd, uint PresentCount, uint PresentRefreshCount, uint SyncRefreshCount, long SyncQpcTime);
 
 /// <summary>Unproven native evidence. Consumers must reject stale identities and unknown boundaries.</summary>
 public sealed class PresentationTracker : IDisposable
@@ -38,6 +40,14 @@ public sealed class PresentationTracker : IDisposable
     int lastStatisticsError;
     bool notificationOverflow;
     long? uiEpoch;
+    PresentationStatisticsSnapshot? latestStatistics;
+    public PresentationStatisticsSnapshot? CaptureStatisticsSnapshot() { lock (gate) return latestStatistics; }
+    internal void RecordStatistics(int hresult, uint presentCount, uint presentRefreshCount,
+        uint syncRefreshCount, long syncQpcTime, long readQpcStart, long readQpcEnd)
+    {
+        lock (gate) latestStatistics = new(swapchainEpoch, hresult, readQpcStart, readQpcEnd,
+            presentCount, presentRefreshCount, syncRefreshCount, syncQpcTime);
+    }
     internal PresentationTracker() => _ = Task.Run(Dispatch);
     public bool IsProven => false;
     public event Action<PresentedFrameEvidence>? Confirmed;
@@ -67,7 +77,7 @@ public sealed class PresentationTracker : IDisposable
     }
     internal void ResetSwapchain(string reason, bool preservePresentIds = false)
     {
-        lock (gate) { swapchainEpoch++; if (!preservePresentIds) latestSubmitted = 0; Clear(reason); }
+        lock (gate) { swapchainEpoch++; latestStatistics = null; if (!preservePresentIds) latestSubmitted = 0; Clear(reason); }
     }
     internal void Submit(uint id, DecodedFrameMetadata? frame, PresentationOperation? intent, long qpc)
     {
