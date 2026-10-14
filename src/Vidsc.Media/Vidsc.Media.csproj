@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Vidsc.Media</RootNamespace>
+    <AssemblyName>Vidsc.Media</AssemblyName>
+    <!--
+      FlyleafLib is the pinned playback engine. Its native FFmpeg library set is loaded from an
+      explicit directory (never from PATH) and must never be mixed with the CLI FFmpeg bundle.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Vidsc.Core\Vidsc.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FlyleafLib" />
+  </ItemGroup>
+
+</Project>

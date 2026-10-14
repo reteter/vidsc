@@ -1,0 +1,13 @@
+# vidsc — native completion status
+
+Date: 14 October 2026. Scope: M0 runtime bundle and runnable minimal M1 prototype.
+
+Result: 120 tests passed; default staged Release build and promotion passed; four promotion rollback tests passed. Fresh spaced Unicode package passed GUI/loaded-native/CLI/scene checks with development Python and FFmpeg removed from PATH. No .NET runtime bundled. Sources and existing CLI outputs retained their hashes. Actual scene windows covered zero and nonzero starts, with and without cuts. Application shutdown completed with an owned scene job active.
+
+Final native changes preserve actual callback milliseconds separately from requested ticks; own and serialize native source opens; prohibit Player reuse after timeout; block seek callbacks during source replacement; discard queued old-source transport; use the pinned scene seek/count API; await owned jobs before dispatcher shutdown; defer nested WPF close; preserve spaced arguments; and disable native autoplay during source inspection.
+
+Evidence: docs/validation/2026-10-14-m0-m1.md section 13, artifacts/native-final-build.log, artifacts/native-delivery-report.json, artifacts/native-delivery.log. Release: artifacts/release/app/Vidsc.App.exe.
+
+Full M1 remains pending: presented-frame PTS/end and CFR/VFR/fractional-frame proof, B1–B6 performance/lifecycle, and visual gates. Exact editing remains disabled. M2–M8 not implemented. Native timeout was source-reviewed but a deliberately hung native open was not injected. Redistribution licence clearance unresolved.
+
+Working tree only; no commit/push, global setting changes, or source media mutation.

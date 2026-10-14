@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Vidsc.Core/Vidsc.Core.csproj" />
+    <Project Path="src/Vidsc.Media/Vidsc.Media.csproj" />
+    <Project Path="src/Vidsc.App/Vidsc.App.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Vidsc.Tests/Vidsc.Tests.csproj" />
+  </Folder>
+</Solution>

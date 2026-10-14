@@ -1,0 +1,23 @@
+# vidsc project-local ignore rules.
+#
+# The depot root .gitignore already ignores any directory named "logs/", which covers
+# artifacts/logs. This file adds the generated build, runtime-download and test artifacts that must
+# never be committed. It intentionally does not touch repository-wide or user settings.
+
+# Build output
+bin/
+obj/
+
+# All generated artifacts, including fresh-location smoke copies and native reports.
+# Source fixture definitions remain under tests/fixtures/.
+/artifacts/
+
+# Local tooling/runtime state and logs (binary or generated)
+*.log
+*.venv/
+venv/
+__pycache__/
+
+# Local tooling state
+*.user
+.vs/

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Vidsc.App</RootNamespace>
+    <AssemblyName>Vidsc.App</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UseWindowsForms>false</UseWindowsForms>
+    <!--
+      Framework-dependent by contract: the installed .NET 10 Desktop Runtime is used and no .NET
+      runtime files are bundled. The release layout is a bundle (native set + CLI tools + scene
+      runtime), not a single EXE; see tools/Build-Release.ps1 and the validation notes.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FlyleafLib" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Vidsc.Core\Vidsc.Core.csproj" />
+    <ProjectReference Include="..\Vidsc.Media\Vidsc.Media.csproj" />
+  </ItemGroup>
+
+</Project>

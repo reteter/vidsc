@@ -1,0 +1,23 @@
+<Project>
+
+  <!--
+    Central package pinning. Exact versions only: no floating ranges.
+    Playback dependency: FlyleafLib is pinned together with the ABI-compatible native FFmpeg
+    library set published in the matching GitHub release (see tools/runtime-manifest.json).
+    The native set MUST NOT be mixed with the separately packaged FFmpeg CLI tool set.
+  -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="FlyleafLib" Version="3.11.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+
+</Project>
