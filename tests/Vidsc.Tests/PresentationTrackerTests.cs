@@ -14,6 +14,40 @@ public sealed class PresentationTrackerTests
         tracker.BeginSource(1); tracker.SetOperation(new(1, 1, null)); tracker.ActivateSource(0);
         return tracker;
     }
+    [Theory]
+    [InlineData(10u, 11u, 12u)]
+    [InlineData(uint.MaxValue - 1, uint.MaxValue, 1u)]
+    public async Task LaggingRejectedPresentDropsOldProofWithoutDiscardingNewPending(
+        uint confirmedId, uint rejectedId, uint freshId)
+    {
+        using var tracker = Ready();
+        var received = new TaskCompletionSource<PresentedFrameEvidence>(TaskCreationOptions.RunContinuationsAsynchronously);
+        tracker.Confirmed += e => { if (e.PresentId == freshId) received.TrySetResult(e); };
+        long at = Stopwatch.GetTimestamp();
+        tracker.Submit(confirmedId, Frame(tracker), tracker.CurrentOperation, at);
+        tracker.Statistics(0, confirmedId, at + 1);
+        tracker.Submit(rejectedId, Frame(tracker), new(1, 99, null), at + 2);
+        tracker.Submit(freshId, Frame(tracker), tracker.CurrentOperation, at + 3);
+        tracker.Statistics(0, rejectedId, at + 4);
+        Assert.Equal(0u, tracker.Snapshot().LastConfirmed);
+        Assert.Equal(1, tracker.Snapshot().PendingCount);
+        Assert.Contains(tracker.Snapshot().RecentTrace, item => item.Event == "Lagging unmapped statistics");
+        tracker.Statistics(0, freshId, at + 5);
+        Assert.Equal(freshId, (await received.Task.WaitAsync(TimeSpan.FromSeconds(3))).PresentId);
+    }
+
+    [Fact]
+    public void UnknownStatisticsNewerThanPendingStillInvalidateCorrelation()
+    {
+        using var tracker = Ready();
+        long at = Stopwatch.GetTimestamp();
+        tracker.Submit(10, Frame(tracker), tracker.CurrentOperation, at);
+        tracker.Statistics(0, 11, at + 1);
+        Assert.Equal(0, tracker.Snapshot().PendingCount);
+        Assert.Equal(0u, tracker.Snapshot().LastConfirmed);
+        Assert.Equal("Unknown confirmed present ID", tracker.Snapshot().LastInvalidation);
+    }
+
     [Fact]
     public async Task OldStatisticsAfterOperationChangeDoNotDiscardNewSubmit()
     {

@@ -10,9 +10,11 @@ gates remain open. See [implementation progress](docs/implementation-progress.md
 See [the validation record](docs/validation/2026-10-14-m0-m1.md) for exactly what was measured and
 [the implementation plan](docs/implementation-plan.md) for the full roadmap.
 
-M0 and the runnable prototype have passed native completion checks (120 tests, staged Release and a
-fresh package directory with spaces). The full M1 gate remains pending: there is no proven
-presented-frame hook or completed B1–B6 benchmark set.
+M0 and the runnable prototype have passed native completion checks. The maintained presentation
+hook is qualified for read-only observations: 140/140 visible frame checks, 19/19 lifecycle checks
+and 108/108 exhaustive VFR checks passed; the current unit suite passes 241 tests. See the
+[presentation qualification](docs/validation/2026-10-14-m1-presentation-acceptance.md).
+Full M1 remains pending the complete B1–B6 benchmark set and remaining visual acceptance.
 
 The timeline supports click/drag seeking, zoom, Shift-drag panning, Fit and Center playhead.
 Choose **Build keyframes** for packet candidates or **Build frame index** for a complete decoded

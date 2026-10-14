@@ -23,13 +23,13 @@ namespace Vidsc.Media.Playback;
 /// <item><description>Source opens are serialized around their owned native call and source
 /// generation, so a late open callback cannot resolve a newer source.</description></item>
 /// <item><description><c>Player.CurTime</c> is polled and stored in the advisory slot only. It is not
-/// proof of what was presented. Experimental typed candidates have separate diagnostics and leave
-/// the observed-presentation slot empty until independent hook acceptance.</description></item>
+/// proof of what was presented. Qualified native observations use a separate read-only getter;
+/// storing them in the mutable tracker would bypass native freshness on later reads.</description></item>
 /// </list>
 /// Engine callbacks run on Flyleaf's playback/seek threads; this adapter only mutates thread-safe
 /// state and raises a single <see cref="StateChanged"/> event for the UI to marshal.
 /// </remarks>
-public sealed class FlyleafPlaybackEngine : IPlaybackEngine, IFrameBoundaryMapConsumer
+public sealed class FlyleafPlaybackEngine : IPlaybackEngine, IFrameBoundaryMapConsumer, IObservedPresentationSource
 {
     private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(30);
 
@@ -59,7 +59,7 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine, IFrameBoundaryMapCo
     private long? _mappedStepTarget;
     private (long Generation, long? SeekId, long RawPts)? _expectedStep;
 
-    /// <summary>Experimental evidence only; never enables exact editing.</summary>
+    /// <summary>Revalidated native evidence; unknown end remains nullable and editing stays disabled.</summary>
     public PresentationCandidateDiagnostic? LastPresentationCandidate
     {
         get
@@ -73,6 +73,9 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine, IFrameBoundaryMapCo
     }
 
     public event EventHandler? PresentationCandidateChanged;
+
+    // Keep this read-only: a stored Core observation would bypass native freshness on later reads.
+    public PresentationObservation? ObservedPresentation => LastPresentationCandidate?.NormalizedObservation;
 
     /// <summary>The owner must enqueue RestartInvalidatedPlayback with its transport commands.</summary>
     public event EventHandler? PlaybackRestartRequested;
@@ -762,7 +765,7 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine, IFrameBoundaryMapCo
                 operation.PresentationEpoch, operation.SeekId is { } seekId ? new SeekRequestId(seekId) : null,
                 frame.StreamIndex, frame.FrameId, frame.RawPts,
                 Rational.Create(frame.TimeBaseNum, frame.TimeBaseDen), frame.UiEpochTicks,
-                evidence.NextRawPts, "Experimental DXGI present-ID confirmation; hook acceptance pending.");
+                evidence.NextRawPts, "Qualified DXGI present-ID confirmation with independently supplied source boundaries.");
             PlaybackPositionSnapshot snapshot = _positions.Snapshot();
             PresentationDiagnostics native = _player.Presentation.Snapshot();
             if (!PresentationCandidateFreshness.IsCurrent(candidate, evidence.SwapChainEpoch,

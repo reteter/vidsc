@@ -1045,9 +1045,10 @@ public unsafe class Demuxer : RunThreadBase
                 {
                     if (CanDebug) Log.Debug($"[Seek({(forward ? "->" : "<-")})] Requested at {new TimeSpan(ticks)}");
 
-                    ret = ticks == StartTime // we should also call this if we seek anywhere within the first Gop
-                        ? avformat_seek_file(fmtCtx, -1, 0, 0, 0, 0)
-                        : av_seek_frame(fmtCtx, -1, ticks / 10, forward ? SeekFlags.None : SeekFlags.Backward);
+                    // An edit list can place the required decode keyframe before the
+                    // visible start. A zero-bounded seek skips that negative preroll.
+                    ret = av_seek_frame(fmtCtx, -1, ticks / 10,
+                        forward && ticks != StartTime ? SeekFlags.None : SeekFlags.Backward);
 
                     curReverseStopPts = NoTs;
                     curReverseStartPts= NoTs;

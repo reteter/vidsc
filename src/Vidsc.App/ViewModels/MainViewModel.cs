@@ -239,12 +239,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand SceneCheckCommand => _sceneCheckCommand;
     public RelayCommand RefreshDiagnosticsCommand => _refreshDiagnosticsCommand;
 
-    /// <summary>Exact In/Out is a UI affordance that stays disabled until the hook is proven.</summary>
+    /// <summary>Interval editing is a later feature than the qualified read-only playback hook.</summary>
     public bool IsExactEditingEnabled => false;
 
     public string ExactEditingReason { get; } =
-        "Disabled: the experimental presentation hook and source boundary mapping require full acceptance. "
-        + "See the hook evidence in the diagnostics panel.";
+        "Interval editing and export are not implemented in this playback prototype.";
 
     public string? SceneReason { get; }
 
@@ -663,9 +662,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             : TimeText.Format(snapshot.AdvisoryReported.Value.ToTicks())
               + (snapshot.AdvisoryEqualsRequestEcho ? " (= requested value; engine echo)" : " (advisory)");
 
-        ObservedText = snapshot.ObservedPresentation is null
-            ? "(no proven presented-frame hook)"
-            : $"{TimeText.Format(snapshot.ObservedPresentation.PresentedStart.ToTicks())} .. {TimeText.Format(snapshot.ObservedPresentation.PresentedEnd.ToTicks())}";
+        PresentationObservation? observed = (_engine as IObservedPresentationSource)?.ObservedPresentation
+            ?? snapshot.ObservedPresentation;
+        ObservedText = observed is null
+            ? "(current frame boundaries unavailable; build a complete frame index)"
+            : $"{TimeText.Format(observed.PresentedStart.ToTicks())} .. {TimeText.Format(observed.PresentedEnd.ToTicks())}";
 
         ExactEditingText = snapshot.ExactBoundariesEligible ? "eligible" : "disabled";
 

@@ -13,18 +13,33 @@ public sealed record PresentedFrameEvidence(DecodedFrameMetadata Frame, Presenta
 public sealed record PresentationDiagnostics(long StagedSourceGeneration, long ActiveSourceGeneration, long DecodeEpoch,
     PresentationOperation DecodeOperation, PresentationOperation CurrentOperation, long SwapChainEpoch,
     int PendingCount, uint LastSubmitted, uint LastConfirmed, long RejectedSubmits, string? LastRejection,
-    long Confirmations, string? LastInvalidation);
+    long Confirmations, string? LastInvalidation)
+{
+    public IReadOnlyList<PresentationTraceEntry> RecentTrace { get; init; } = Array.Empty<PresentationTraceEntry>();
+    public PresentationStatisticsSnapshot? LatestStatistics { get; init; }
+}
+public sealed record PresentationTraceEntry(string Event, uint PresentId, long Qpc,
+    PresentationOperation CurrentOperation, PresentationOperation? ScheduledOperation,
+    PresentationOperation? FrameOperation, long? FrameGeneration, long? FrameDecodeEpoch,
+    long SwapChainEpoch, int PendingCount, uint LastSubmitted, uint LastConfirmed)
+{
+    public PresentationStatisticsSnapshot? Statistics { get; init; }
+}
 public sealed record PresentationInvalidation(string Reason, PresentationOperation Operation, long SwapChainEpoch);
 public sealed record PresentationStatisticsSnapshot(long SwapChainEpoch, int HResult, long ReadQpcStart,
-    long ReadQpcEnd, uint PresentCount, uint PresentRefreshCount, uint SyncRefreshCount, long SyncQpcTime);
+    long ReadQpcEnd, uint PresentCount, uint PresentRefreshCount, uint SyncRefreshCount, long SyncQpcTime)
+{
+    public int? CompositionFlushHResult { get; init; }
+}
 
-/// <summary>Unproven native evidence. Consumers must reject stale identities and unknown boundaries.</summary>
+/// <summary>Native evidence. Consumers own qualification and must reject stale identities and unknown boundaries.</summary>
 public sealed class PresentationTracker : IDisposable
 {
     readonly object gate = new();
     readonly Channel<object> notifications = Channel.CreateBounded<object>(new BoundedChannelOptions(256)
         { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     readonly Dictionary<uint, PresentedFrameEvidence> pending = new();
+    readonly Queue<PresentationTraceEntry> trace = new();
     readonly Queue<uint> order = new();
     PresentationOperation operation = new(0, 0, null);
     PresentationOperation decodeOperation = new(0, 0, null);
@@ -35,21 +50,26 @@ public sealed class PresentationTracker : IDisposable
     string? lastRejection, lastInvalidation;
     public PresentationDiagnostics Snapshot() { lock (gate) return new(stagedGeneration, activeGeneration, decodeEpoch,
         decodeOperation, operation, swapchainEpoch, pending.Count, latestSubmitted, lastConfirmed,
-        rejectedSubmits, lastRejection, confirmations, lastInvalidation); }
+        rejectedSubmits, lastRejection, confirmations, lastInvalidation) { RecentTrace = trace.ToArray(), LatestStatistics = latestStatistics }; }
     bool disposed;
     int lastStatisticsError;
     bool notificationOverflow;
     long? uiEpoch;
     PresentationStatisticsSnapshot? latestStatistics;
+    int? latestCompositionFlushHResult;
     public PresentationStatisticsSnapshot? CaptureStatisticsSnapshot() { lock (gate) return latestStatistics; }
     internal void RecordStatistics(int hresult, uint presentCount, uint presentRefreshCount,
-        uint syncRefreshCount, long syncQpcTime, long readQpcStart, long readQpcEnd)
+        uint syncRefreshCount, long syncQpcTime, long readQpcStart, long readQpcEnd, int? compositionFlushHResult = null)
     {
-        lock (gate) latestStatistics = new(swapchainEpoch, hresult, readQpcStart, readQpcEnd,
-            presentCount, presentRefreshCount, syncRefreshCount, syncQpcTime);
+        lock (gate)
+        {
+            if (compositionFlushHResult is { } flush) latestCompositionFlushHResult = flush;
+            latestStatistics = new(swapchainEpoch, hresult, readQpcStart, readQpcEnd,
+                presentCount, presentRefreshCount, syncRefreshCount, syncQpcTime)
+                { CompositionFlushHResult = latestCompositionFlushHResult };
+        }
     }
     internal PresentationTracker() => _ = Task.Run(Dispatch);
-    public bool IsProven => false;
     public event Action<PresentedFrameEvidence>? Confirmed;
     public event Action<PresentationInvalidation>? Invalidated;
     public PresentationOperation CurrentOperation { get { lock (gate) return operation; } }
@@ -77,7 +97,7 @@ public sealed class PresentationTracker : IDisposable
     }
     internal void ResetSwapchain(string reason, bool preservePresentIds = false)
     {
-        lock (gate) { swapchainEpoch++; latestStatistics = null; if (!preservePresentIds) latestSubmitted = 0; Clear(reason); }
+        lock (gate) { swapchainEpoch++; latestStatistics = null; latestCompositionFlushHResult = null; if (!preservePresentIds) latestSubmitted = 0; Clear(reason); }
     }
     internal void Submit(uint id, DecodedFrameMetadata? frame, PresentationOperation? intent, long qpc)
     {
@@ -86,11 +106,12 @@ public sealed class PresentationTracker : IDisposable
             latestSubmitted = id;
             if (disposed || frame is null || intent is null || frame.SourceGeneration != activeGeneration ||
                 intent != operation || frame.SourceGeneration != intent.SourceGeneration)
-            { rejectedSubmits++; lastRejection = frame is null ? "No decoded backbuffer identity" : intent is null ? "No scheduled operation" : "Source/operation mismatch"; return; }
+            { rejectedSubmits++; lastRejection = frame is null ? "No decoded backbuffer identity" : intent is null ? "No scheduled operation" : "Source/operation mismatch"; Trace("Rejected: " + lastRejection, id, qpc, intent, frame); return; }
             if (pending.ContainsKey(id)) { Clear("Present ID reused"); return; }
             while (order.Count >= 256) { pending.Remove(order.Dequeue()); Notify(new PresentationInvalidation("Present map eviction", operation, swapchainEpoch)); }
             // End is deliberately unknown until an independent contiguous-frame oracle is established.
             pending[id] = new(frame, intent, swapchainEpoch, id, qpc, 0, null); order.Enqueue(id);
+            Trace("Submitted", id, qpc, intent, frame);
         }
     }
     internal void Statistics(int hresult, uint id, long qpc)
@@ -106,8 +127,19 @@ public sealed class PresentationTracker : IDisposable
             if (hasOperationBaseline && unchecked((int)(id - operationBaseline)) <= 0) return;
             if (id != 0 && id != lastConfirmed)
             {
+                // DXGI can still report a rejected/unmapped older present while newer valid work
+                // is pending. Fail closed for the old observation without destroying that newer
+                // correlation or restarting its playback operation. Signed deltas handle ID wrap.
+                if (!pending.ContainsKey(id) && order.Count > 0
+                    && unchecked((int)(id - order.Peek())) < 0)
+                {
+                    lastConfirmed = 0;
+                    Trace("Lagging unmapped statistics", id, qpc);
+                    return;
+                }
                 lastConfirmed = id;
-                if (!pending.TryGetValue(id, out var evidence)) { Clear("Unknown confirmed present ID"); return; }
+                if (!pending.TryGetValue(id, out var evidence)) { Trace("Unknown statistics", id, qpc); Clear("Unknown confirmed present ID"); return; }
+                Trace("Confirmed", id, qpc, evidence.Operation, evidence.Frame);
                 confirmations++;
                 Notify(evidence with { ConfirmQpc = qpc });
                 while (order.Count > 0) { uint removed = order.Dequeue(); pending.Remove(removed); if (removed == id) break; }
@@ -118,10 +150,17 @@ public sealed class PresentationTracker : IDisposable
     }
     void Clear(string reason)
     {
+        Trace("Invalidated: " + reason, 0, Stopwatch.GetTimestamp());
         lastInvalidation = reason;
         operationBaseline = latestSubmitted; hasOperationBaseline = latestSubmitted != 0;
         pending.Clear(); order.Clear(); lastConfirmed = 0;
         Notify(new PresentationInvalidation(reason, operation, swapchainEpoch));
+    }
+    void Trace(string kind, uint id, long qpc, PresentationOperation? intent = null, DecodedFrameMetadata? frame = null)
+    {
+        while (trace.Count >= 32) trace.Dequeue();
+        trace.Enqueue(new(kind, id, qpc, operation, intent, frame?.Operation, frame?.SourceGeneration,
+            frame?.DecodeEpoch, swapchainEpoch, pending.Count, latestSubmitted, lastConfirmed) { Statistics = latestStatistics });
     }
     void Notify(object item)
     {

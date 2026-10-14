@@ -19,6 +19,7 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
     private readonly List<object> _checks = [];
     private readonly List<string> _failures = [];
     private readonly List<object> _lifecycleChecks = [];
+    private bool _foregroundAcquired;
 
     public async Task<int> RunAsync()
     {
@@ -53,6 +54,9 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
             // acceptance window visible while the independent screenshot oracle runs.
             window.Topmost = true;
             window.Activate();
+            var activation = Stopwatch.StartNew();
+            while (!window.IsActive && activation.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(100);
+            if (!window.IsActive) throw new TimeoutException("Visual acceptance requires foreground activation before opening the fixture.");
             if (options.PresentationLifecycle)
                 await LifecycleAsync("empty-source-minimize-restore", async () =>
                 {
@@ -317,10 +321,12 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
                 string? failure = null;
                 string? endFailure = null;
                 object? nativeBefore = null, nativeAfter = null;
+                var captureAttempts = new List<object>();
                 bool nondeterministicPlaybackFrame = index < 0;
                 long expectedPts = index >= 0 ? frames[index].GetProperty("pts").GetInt64() : 0;
                 try
                 {
+                    await FocusAsync();
                     var previous = flyleaf.LastPresentationCandidate;
                     await Task.Run(command).WaitAsync(TimeSpan.FromSeconds(10));
                     var deadline = Stopwatch.StartNew();
@@ -344,15 +350,33 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
                         index = matches[0];
                         expectedPts = frames[index].GetProperty("pts").GetInt64();
                     }
-                    // A paused candidate must stay immutable across the independent capture.
-                    nativeBefore = settledNative;
-                    await CaptureAsync(screenshot);
-                    after = flyleaf.LastPresentationCandidate;
-                    var capturedNative = flyleaf.PresentationState;
-                    nativeAfter = capturedNative;
-                    if (after != before) throw new InvalidOperationException("Presentation changed during screenshot.");
-                    if (!IsSettled(before, capturedNative))
-                        throw new InvalidOperationException("Presentation submission changed during screenshot.");
+                    // A delayed repaint can invalidate a capture without changing the requested
+                    // frame. Discard that measurement and require one fully stable attempt.
+                    bool stableCapture = false;
+                    for (int attempt = 0; attempt < 3; attempt++)
+                    {
+                        while (deadline.Elapsed < TimeSpan.FromSeconds(8))
+                        {
+                            before = flyleaf.LastPresentationCandidate;
+                            if (before is not null && before != previous && IsSettled(before, flyleaf.PresentationState)) break;
+                            await Task.Delay(40);
+                        }
+                        if (before is null || !IsSettled(before, flyleaf.PresentationState)) break;
+                        if (before.Candidate.OriginalPts is not { } capturePts
+                            || (BigInteger)capturePts * before.Candidate.TimeBase.Numerator * 24000
+                                != (BigInteger)expectedPts * before.Candidate.TimeBase.Denominator)
+                            throw new InvalidOperationException("Capture candidate differs from the independently expected frame.");
+                        string attemptPath = attempt == 0 ? screenshot : Path.ChangeExtension(screenshot, $"retry{attempt}.png");
+                        nativeBefore = flyleaf.PresentationState;
+                        await CaptureAsync(attemptPath);
+                        after = flyleaf.LastPresentationCandidate;
+                        var capturedNative = flyleaf.PresentationState;
+                        nativeAfter = capturedNative;
+                        stableCapture = after == before && IsSettled(before, capturedNative);
+                        captureAttempts.Add(new { attempt, screenshot = attemptPath, stableCapture, before, after, nativeBefore, nativeAfter });
+                        if (stableCapture) { screenshot = attemptPath; break; }
+                    }
+                    if (!stableCapture || before is null) throw new InvalidOperationException("No immutable confirmed presentation across three screenshot attempts.");
                     decoded = DecodeBarcode(screenshot, fixture);
                     if (decoded != index) throw new InvalidOperationException($"Visible identity {decoded} differs from expected {index}.");
                     var candidate = before.Candidate;
@@ -385,11 +409,13 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
                 _checks.Add(new { action, expectedIndex = index, expectedPts, expectedTimeBase = "1/24000",
                     nondeterministicPlaybackFrame,
                     requestedTicks, requestedIntegerMilliseconds = requestedTicks / TimeSpan.TicksPerMillisecond,
-                    decodedIndex = decoded, before, after, nativeBefore, nativeAfter, screenshot,
+                    decodedIndex = decoded, before, after, nativeBefore, nativeAfter, screenshot, captureAttempts,
                     passed = failure is null, failure, endFailure,
                     expectedUiStart = index >= 0 ? frames[index].GetProperty("uiPts").GetInt64() : (long?)null,
                     expectedUiEnd = index >= 0 ? frames[index].GetProperty("end").GetInt64() - sourceEpoch : (long?)null,
                     endStatus = failure is null ? "passed with independently verified file boundary map" : "failed or pending" });
+                if (failure is not null)
+                    throw new InvalidOperationException("Stopped at the first failed visible check: " + action + "/" + index);
             }
 
             bool IsSettled(PresentationCandidateDiagnostic diagnostic, PresentationDiagnostics native)
@@ -406,7 +432,7 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
         }
         catch (Exception ex) { _failures.Add(ex.ToString()); }
         await JsonSerializer.SerializeAsync(output, new { schemaVersion = 1, generatedUtc = DateTime.UtcNow,
-            fixtureName, media = Path.GetFullPath(options.MediaPaths[0]), advisoryOnly = true,
+            fixtureName, media = Path.GetFullPath(options.MediaPaths[0]), advisoryOnly = FlyleafPresentedFrameHook.Status != Vidsc.Core.Playback.PresentedFrameHookStatus.Proven,
             exhaustiveSteps = options.ExhaustiveSteps, checkCount = _checks.Count, expectedCheckCount,
             visibleIdentityAndPtsPassed = _failures.Count == 0 && _checks.Count == expectedCheckCount,
             fullM1Passed = false, sourceSwitchStatus, boundaryEvidence,
@@ -482,12 +508,38 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
         }).ToArray();
     }
 
+    private async Task FocusAsync()
+    {
+        var wait = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                await RunWinappAsync(["ui", "focus", "NavigationTimeline", "-w",
+                    new System.Windows.Interop.WindowInteropHelper(window).Handle.ToInt64().ToString(), "--json"]);
+                _foregroundAcquired = true;
+                return;
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("foreground_not_target")
+                && wait.Elapsed < TimeSpan.FromSeconds(_foregroundAcquired ? 3 : 60))
+            {
+                await Task.Delay(100);
+            }
+        }
+    }
+
     private async Task CaptureAsync(string path)
+    {
+        await RunWinappAsync(["ui", "screenshot", "-w", window.PlaybackSurfaceHandle.ToInt64().ToString(),
+            "-o", path, "--json"]);
+        if (!File.Exists(path)) throw new InvalidOperationException("winapp did not create the screenshot.");
+    }
+
+    private async Task RunWinappAsync(IReadOnlyList<string> arguments)
     {
         var start = new ProcessStartInfo(options.WinAppPath!) { UseShellExecute = false,
             CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        foreach (string argument in new[] { "ui", "screenshot", "-w", window.PlaybackSurfaceHandle.ToInt64().ToString(),
-            "-o", path, "--json" }) start.ArgumentList.Add(argument);
+        foreach (string argument in arguments) start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start winapp.");
         Task<string> stdout = process.StandardOutput.ReadToEndAsync(), stderr = process.StandardError.ReadToEndAsync();
         try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15)); }
@@ -498,8 +550,8 @@ public sealed class PresentationCheckRunner(CommandLineOptions options, MainView
             throw;
         }
         await Task.WhenAll(stdout, stderr);
-        if (process.ExitCode != 0 || !File.Exists(path))
-            throw new InvalidOperationException($"winapp screenshot failed ({process.ExitCode}): {await stderr} {await stdout}");
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"winapp command failed ({process.ExitCode}): {await stderr} {await stdout}");
     }
 
     private static int DecodeBarcode(string path, JsonElement fixture)

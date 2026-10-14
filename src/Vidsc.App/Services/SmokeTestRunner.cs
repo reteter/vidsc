@@ -141,9 +141,10 @@ public sealed class SmokeTestRunner
                 pinnedCommit = FlyleafPresentedFrameHook.PinnedCommit,
                 evidence = FlyleafPresentedFrameHook.EvidenceSummary,
                 presentationProof =
-                    "No proven presented-frame hook. Renderer.PresentPlay/RenderPlay are render requests and "
-                    + "may succeed without a DWM present; Player.VideoDecoder.GetFrameTimestamp arithmetic "
-                    + "describes decoded frames and is NOT a VFR oracle. Exact In/Out therefore stays disabled.",
+                    "The maintained hook is qualified separately by labeled frame and lifecycle acceptance. "
+                    + "This startup smoke checks delivery and progress, not presentation correctness. "
+                    + "Render requests, aggregate counters and nominal FPS arithmetic cannot prove frame identity; "
+                    + "interval editing remains outside this prototype.",
             },
             presentation = new
             {
@@ -305,13 +306,10 @@ public sealed class SmokeTestRunner
             failures.Add($"The engine reported seek failure for {mediaPath}.");
 
         if (afterSeek.ObservedPresentation is not null)
-            failures.Add("Invariant violated: an observed presentation was recorded although the hook is unproven.");
+            failures.Add("Invariant violated: the mutable tracker retained native presentation evidence outside its freshness-checked getter.");
 
         if (afterSeek.ExactBoundariesEligible)
-            failures.Add("Invariant violated: exact boundaries were reported eligible without a proven hook.");
-
-        if (afterSeek.HookStatus == PresentedFrameHookStatus.Proven)
-            failures.Add("Invariant violated: the presented-frame hook reports Proven in the prototype.");
+            failures.Add("Invariant violated: interval editing was enabled before its implementation stage.");
 
         // Coalesced approximate seeking (as produced by dragging) followed by one exact seek on
         // release. One seek is in flight; the rest are coalesced into a single latest target.

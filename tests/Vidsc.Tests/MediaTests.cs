@@ -189,11 +189,9 @@ public sealed class PlaybackNativeAbiTests
     }
 
     [Fact]
-    public void PresentedFrameHook_IsNotMarkedProven()
+    public void PresentedFrameHook_ExplainsPinnedRequestEchoLimitations()
     {
-        // Guard rail: if this assertion ever changes, the exact-edit eligibility policy must be
-        // re-reviewed together with the evidence text.
-        Assert.NotEqual(Vidsc.Core.Playback.PresentedFrameHookStatus.Proven, FlyleafPresentedFrameHook.Status);
+        // Qualifying the maintained presentation hook does not change upstream request semantics.
         Assert.Contains("SeekCompleted", FlyleafPresentedFrameHook.EvidenceSummary);
         Assert.Contains(FlyleafPresentedFrameHook.PinnedVersion, FlyleafPresentedFrameHook.EvidenceSummary);
     }

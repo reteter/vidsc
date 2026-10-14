@@ -49,6 +49,16 @@ foreach ($fixture in $fixtures) {
     $start.Environment['VIDSC_WORK_DIR'] = Join-Path $output "$($fixture.name)-work"
     $process = [Diagnostics.Process]::Start($start)
     try {
+        # The parent automation process owns foreground activation; Windows can deny a
+        # background application's attempt to activate itself or its own child helper.
+        $ready = [Diagnostics.Stopwatch]::StartNew()
+        while (!$process.HasExited -and $process.MainWindowHandle -eq [IntPtr]::Zero -and $ready.Elapsed.TotalSeconds -lt 15) {
+            Start-Sleep -Milliseconds 50
+            $process.Refresh()
+        }
+        $focus = & $winapp ui focus NavigationTimeline -a $process.Id --json 2>&1
+        $focus | Set-Content -LiteralPath (Join-Path $output "$($fixture.name)-focus.json")
+        if ($LASTEXITCODE -ne 0 -and "$focus" -notlike '*foreground_not_target*') { throw "Owned acceptance window could not acquire foreground focus: $focus" }
         $exited = $process.WaitForExit($(if ($ExhaustiveSteps) { 1200000 } else { 300000 }))
         if (!$exited) {
             $process.Kill($true)
@@ -66,6 +76,7 @@ foreach ($fixture in $fixtures) {
         }
         finally { $process.Dispose() }
     }
+    if ($results[-1].status -ne 'passed-visible-identity-and-pts') { break }
 }
 $summary = @{ schemaVersion=1; fullM1Passed=$false; presentationEndProvenance='See per-fixture reports; complete file map and independent mathematical oracle'; sourceSwitchStatus=$(if (!$Lifecycle) {'pending'} elseif (@($results | Where-Object { $_.sourceSwitchStatus -ne 'passed' }).Count) {'failed'} else {'passed'}); lifecycleRequested=[bool]$Lifecycle; results=$results }
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $output 'summary.json') -Encoding utf8

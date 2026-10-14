@@ -31,6 +31,14 @@ public sealed class BenchmarkRunner(CommandLineOptions options, MainViewModel vi
         timer.Start();
         try
         {
+            window.Topmost = true;
+            window.Activate();
+            var activation = Stopwatch.StartNew();
+            while (!window.IsActive && activation.Elapsed < TimeSpan.FromSeconds(60)) await Task.Delay(100);
+            if (!window.IsActive) throw new TimeoutException("Benchmark requires foreground activation before timing begins.");
+            _observations.Add(new { kind = "visual-test-condition", topmost = true,
+                width = window.ActualWidth, height = window.ActualHeight,
+                reason = "DXGI confirmation requires a visible surface; no physical scanout claim" });
             if (!await window.WaitForSurfaceAsync(TimeSpan.FromSeconds(15)))
                 throw new InvalidOperationException("Render surface unavailable.");
             switch (options.Benchmark)
@@ -131,8 +139,11 @@ public sealed class BenchmarkRunner(CommandLineOptions options, MainViewModel vi
         PlaybackDiagnostics diagnostics = engine.GetDiagnostics();
         if (!viewModel.IsOpened || diagnostics.Status is PlaybackEngineStatus.Failed or PlaybackEngineStatus.NotStarted || diagnostics.DurationTicks <= 0)
             throw new InvalidOperationException("Open failed: " + path + ": " + diagnostics.LastError);
+        PresentationCandidateDiagnostic? firstFrame = await WaitForPresentedAsync(null);
         _observations.Add(new { kind = "open", path, phase, iteration, metadataAndOpenMs = milliseconds,
-            firstPresentedFrameMs = (double?)null, generation = engine.Positions.Generation.Value, diagnostics });
+            firstPresentedFrameMs = firstFrame is null ? (double?)null
+                : 1000.0 * (firstFrame.ConfirmQpc - start) / Stopwatch.Frequency,
+            firstFrame, generation = engine.Positions.Generation.Value, diagnostics });
     }
 
     private async Task SeekAsync(string path)
@@ -142,7 +153,11 @@ public sealed class BenchmarkRunner(CommandLineOptions options, MainViewModel vi
         var timings = new List<double>();
         for (int i = 0; i < 100; i++)
         {
-            long ticks = (long)(random.NextDouble() * Math.Max(1, duration - TimeSpan.TicksPerSecond));
+            // Fixed neighborhoods complement the persisted seeded long-range targets.
+            double[] fixedSeconds = [0, 120, 120.04, 119.96, 109, 131, (duration / (double)TimeSpan.TicksPerSecond) - 1, 1, 1.04];
+            long ticks = i < fixedSeconds.Length
+                ? Math.Clamp((long)(fixedSeconds[i] * TimeSpan.TicksPerSecond), 0, Math.Max(0, duration - 1))
+                : (long)(random.NextDouble() * Math.Max(1, duration - TimeSpan.TicksPerSecond));
             SourceGeneration generation = engine.Positions.Generation;
             SeekRequestId? previous = engine.Positions.Snapshot().LastCompletion?.Id;
             long start = Stopwatch.GetTimestamp();
@@ -160,13 +175,36 @@ public sealed class BenchmarkRunner(CommandLineOptions options, MainViewModel vi
                 await Task.Delay(10);
             }
             double elapsed = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            if (!complete) throw new TimeoutException($"Seek {i} did not complete for its source generation.");
+            PresentationCandidateDiagnostic? presented = await WaitForPresentedAsync(request?.Id);
             timings.Add(elapsed);
             _observations.Add(new { kind = "seek", path, index = i, requestedTicks = ticks, generation = generation.Value,
-                requestId = request?.Id.Value, requestCompletionMs = elapsed, completed = complete, timing = "advisory callback, not presentation" });
-            if (!complete) throw new TimeoutException($"Seek {i} did not complete for its source generation.");
+                seekClass = i switch { 0 => "beginning", 1 => "inspected-120s", 2 or 3 or 8 => "nearby",
+                    4 or 5 => "wide-GOP-neighborhood", 6 => "near-EOF", 7 => "early-source", _ => "seeded-long-range" },
+                requestId = request?.Id.Value, requestCompletionMs = elapsed, completed = complete,
+                presentationConfirmedMs = presented is null ? (double?)null : 1000.0 * (presented.ConfirmQpc - start) / Stopwatch.Frequency,
+                presented, timing = "callback and independently correlated DXGI present-ID latency recorded separately" });
         }
         double[] ordered = timings.Order().ToArray();
         _observations.Add(new { kind = "seek-summary", path, medianMs = ordered[49], p95Ms = ordered[94] });
+    }
+
+    private async Task<PresentationCandidateDiagnostic?> WaitForPresentedAsync(SeekRequestId? requestId)
+    {
+        if (engine is not FlyleafPlaybackEngine flyleaf) return null;
+        var wait = Stopwatch.StartNew();
+        while (wait.Elapsed < TimeSpan.FromSeconds(8))
+        {
+            var candidate = flyleaf.LastPresentationCandidate;
+            var native = flyleaf.PresentationState;
+            if (candidate is not null && candidate.Candidate.Generation == engine.Positions.Generation
+                && (requestId is null || candidate.Candidate.ResolvedFrom == requestId)
+                && candidate.SwapChainEpoch == native.SwapChainEpoch && native.PendingCount == 0
+                && candidate.PresentId == native.LastConfirmed && candidate.PresentId == native.LastSubmitted)
+                return candidate;
+            await Task.Delay(10);
+        }
+        throw new TimeoutException("No current confirmed frame after open/seek.");
     }
 
     private async Task PlaybackAsync(string path)
@@ -305,7 +343,8 @@ public sealed class BenchmarkRunner(CommandLineOptions options, MainViewModel vi
                 bool activeAtCancel = !job.IsCompleted;
                 await viewModel.CancelMediaJobAsync().WaitAsync(TimeSpan.FromSeconds(30));
                 BenchmarkMediaJobResult result = await job;
-                bool passed = activeAtCancel && result.Cancelled && result.ExitConfirmed && !viewModel.MediaJobStuck;
+                bool passed = activeAtCancel && result.Cancelled && result.ExitConfirmed
+                    && result.CleanupConfirmed && !viewModel.MediaJobStuck;
                 _observations.Add(new { kind = "job-cancellation", jobKind = kind, cycle, identity, activeAtCancel, result, status = passed ? "passed" : "failed" });
                 if (!passed) _failures.Add($"Cancellation {kind}/{cycle} did not cancel an active started child and confirm its exit.");
             }
@@ -353,7 +392,7 @@ public sealed class BenchmarkRunner(CommandLineOptions options, MainViewModel vi
                         });
                         if (began is long start) activeSeconds += Stopwatch.GetElapsedTime(start).TotalSeconds;
                         _observations.Add(new { kind = "contention-job", jobKind = kind, phase, result });
-                        if (!result.ExitConfirmed || viewModel.MediaJobStuck || (!result.Success && !result.Cancelled))
+                        if (!result.ExitConfirmed || !result.CleanupConfirmed || viewModel.MediaJobStuck || (!result.Success && !result.Cancelled))
                             throw new InvalidOperationException($"Contention child {kind} failed or exit was unconfirmed.");
                         if (began is null) throw new InvalidOperationException($"Contention child {kind} never started.");
                     }

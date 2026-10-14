@@ -23,8 +23,8 @@ public sealed record OpenSourceResult(bool Success, string? Error, long Duration
 }
 
 /// <summary>
-/// Diagnostic evidence from the experimental presentation integration. A normalized candidate
-/// remains separate from Positions.ObservedPresentation until the hook's acceptance gate passes.
+/// Native presentation evidence. The qualified read-only observation remains separate from the
+/// mutable tracker so every consumer read can revalidate the current native state.
 /// </summary>
 public sealed record PresentationCandidateDiagnostic(
     PresentedFrameCandidate Candidate,
@@ -38,6 +38,12 @@ public sealed record PresentationCandidateDiagnostic(
 public interface IFrameBoundaryMapConsumer
 {
     void SetBoundaryMap(PresentationBoundaryMap? map);
+}
+
+/// <summary>Read at consumption time; unknown boundaries or stale native evidence return null.</summary>
+public interface IObservedPresentationSource
+{
+    PresentationObservation? ObservedPresentation { get; }
 }
 
 /// <summary>

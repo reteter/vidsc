@@ -32,6 +32,7 @@ public unsafe class SwapChain
     IDXGISwapChain1             sc;
     object presentationGate = new();
     Timer presentationPoll;
+    int presentationPollActive;
     IDCompositionDevice         dcDevice;
     IDCompositionVisual         dcVisual;
     IDCompositionTarget         dcTarget;
@@ -124,7 +125,7 @@ public unsafe class SwapChain
 
             sc = Engine.Video.Factory.CreateSwapChainForComposition(Renderer.Device, Desc());
             ResetPresentationSwapchain("Swapchain created");
-            presentationPoll = new Timer(_ => PollStatistics(), null, 10, 10); // we will resize on rendering
+            presentationPoll = new Timer(_ => PollStatisticsBackground(), null, 10, 10); // we will resize on rendering
             DComp.DCompositionCreateDevice(Renderer.DXGIDevice, out dcDevice).CheckError();
             dcDevice.CreateTargetForHwnd(ControlHwnd, false, out dcTarget).CheckError();
             dcDevice.CreateVisual(out dcVisual).CheckError();
@@ -187,7 +188,7 @@ public unsafe class SwapChain
 
             sc = Engine.Video.Factory.CreateSwapChainForComposition(Renderer.Device, Desc());
             ResetPresentationSwapchain("Swapchain created");
-            presentationPoll = new Timer(_ => PollStatistics(), null, 10, 10);
+            presentationPoll = new Timer(_ => PollStatisticsBackground(), null, 10, 10);
 
             SetupLocalHelper();
 
@@ -365,7 +366,25 @@ public unsafe class SwapChain
             Renderer.Presentation.ResetSwapchain(reason, preservePresentIds);
         }
     }
-    void PollStatistics()
+    [DllImport("dwmapi.dll", ExactSpelling = true)]
+    static extern int DwmFlush();
+
+    void PollStatisticsBackground()
+    {
+        if (Interlocked.Exchange(ref presentationPollActive, 1) != 0) return;
+        try
+        {
+            if (Disposed) return;
+            int? flush = null;
+            // Hardware Flip Queue systems may not publish fresh DXGI frame statistics until
+            // composition drains. DwmFlush can wait: never call it under any renderer lock or
+            // from Present/UI, and never overlap these independent timer callbacks.
+            if (CanPresent && Renderer.Presentation.Snapshot().PendingCount > 0) flush = DwmFlush();
+            PollStatistics(flush);
+        }
+        finally { Volatile.Write(ref presentationPollActive, 0); }
+    }
+    void PollStatistics(int? compositionFlushHResult = null)
     {
         lock (presentationGate)
         {
@@ -375,8 +394,10 @@ public unsafe class SwapChain
             var hr = sc.GetFrameStatistics(out var statistics);
             long readEnd = System.Diagnostics.Stopwatch.GetTimestamp();
             Renderer.Presentation.RecordStatistics(hr.Code, statistics.PresentCount, statistics.PresentRefreshCount,
-                statistics.SyncRefreshCount, statistics.SyncQPCTime, readStart, readEnd);
-            Renderer.Presentation.Statistics(hr.Code, statistics.PresentCount, readEnd);
+                statistics.SyncRefreshCount, statistics.SyncQPCTime, readStart, readEnd, compositionFlushHResult);
+            // A failed requested composition barrier leaves this poll unavailable as proof.
+            if (compositionFlushHResult is not < 0)
+                Renderer.Presentation.Statistics(hr.Code, statistics.PresentCount, readEnd);
             } catch (Exception e) { Renderer.Presentation.Invalidate($"Statistics poll: {e.GetType().Name}"); }
         }
     }
