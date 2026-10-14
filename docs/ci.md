@@ -18,8 +18,20 @@ Locally, run the smallest relevant tests after behavior changes; run this full e
 
 Before expanding an integration, choose the highest-risk backend contract and a small test with
 explicit acceptance criteria, non-goals and a time/run budget. Do not grow a generic harness while
-the contract remains unproven. At the budget limit, summarize evidence and decide the next bounded
-experiment instead of repeatedly launching broad suites.
+the contract remains unproven. Count every attempt and classify its outcome as environment,
+fixture/harness or product evidence. A harness fix or renamed scenario does not reset the budget.
+At the limit, summarize evidence, state the next hypothesis and justify a new bounded budget before
+continuing within the authorized scope.
+
+Qualify the fixture and harness separately before trusting the product oracle: verify required input
+properties and exercise the measurement path with a small known result. Acceptance must include a
+real adapter invocation in the target runtime (the packaged runtime when packaging is part of the
+contract), not only parser or mocked results. Cover a minimal successful lifecycle and a relevant
+failure path, including cleanup and resource release where applicable.
+
+For an API/schema or runtime contract migration, identify all consumers before implementation:
+producer/driver, parser, callers, tests, packaging gates and documentation. Check the affected
+boundaries together so a passing producer test cannot hide a stale consumer or launch contract.
 
 After a fix, run the affected scenario first. Broad suites belong at stable checkpoints, when
 required by the CI contract, or when a named cross-cutting risk justifies them. A harness change

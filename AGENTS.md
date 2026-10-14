@@ -18,8 +18,11 @@
 
 - The main agent owns integration, verification, issue updates and delivery. Delegate independent subtasks only when worthwhile.
 - Built-in subagents: gpt-6.1-sol, low effort for implementation/tests; high effort for design/review. Disclose unavailability before substituting.
-- Give subagents bounded responsibilities, file ownership and applicable constraints. They read task-specific context rather than repeat the main agent's startup discovery.
-- Before delegation, define acceptance criteria, non-goals and an experiment/time budget. Prioritize review of timing, concurrency and resource ownership for media changes.
+- Give subagents bounded responsibilities, file ownership and applicable constraints. They read task-specific context rather than repeat the main agent's startup discovery. Delegate cohesive contracts or phases; keep small corrections with the main agent when handoff costs exceed the benefit.
+- Before delegation, define acceptance criteria, non-goals and an experiment/time budget. Before parallel implementation, agree the minimal API/schema, source/time identity, resource limits, errors and resource ownership; freeze the proven interface before splitting dependent integration work.
+- Focus reviews on the exact delta, named risks and available evidence. Prioritize timing, concurrency and resource ownership for media changes; repeat broader review only when a change invalidates earlier conclusions.
+- Require a final subagent report: changed files, acceptance results, checks run/not run, integration risks, scope assessment and one workflow lesson. Include input/output/cached tokens and context state when available; otherwise state unavailable. A handoff is ready for integration, not independently accepted.
+- Collect available runtime metrics centrally without extra report-only agent turns. Keep the latest cumulative snapshot per agent/session and phase baselines/deltas; cached tokens are a subset of input, not an extra total. Do not infer remaining context or cost from cumulative counters. Keep a compact current assessment and chronological evidence in ignored workflow logs, including scope decisions and lessons; GitHub remains the task ledger.
 - Do not use opencode-delegate without an explicit user request.
 
 ## Execution boundaries
