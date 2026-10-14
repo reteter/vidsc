@@ -13,6 +13,9 @@ VFR adjacency passes 108/108. Historical failed runs remain preserved.
 See docs/validation/2026-10-14-m1-presentation-acceptance.md.
 Default Release verification passed: source/native manifest, CLI/barcodes, packaged scene windows,
 application smoke and promotion (artifacts/m1-qualified-release-build.log). B6 Test-Delivery is unrun.
+User's short real-HEVC manual trial passed without reported problems. Minimize pauses playback.
+Timeline zoom-scale/scrollbar/whole-clip overview TODO is recorded in docs/implementation-progress.md.
+Long visible-window benchmarks are on hold until a time is agreed with the user; no UI automation now.
 The pinned maintained source hook is Proven for IObservedPresentationSource. Every read checks
 native freshness; normalized start/end require a complete matching source map and a verified end.
 Missing map/end returns null; EOF is unknown unless independently verified. Core stores no second

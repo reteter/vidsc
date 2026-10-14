@@ -16,6 +16,12 @@ replacement during seek, burst/pause, resize, paused minimize/restore, playing m
 user pause while hidden and dispose cancellation. The earlier exhaustive VFR run passes **108/108**
 checks of all adjacent pairs. Generated evidence is under `artifacts/tests/presentation-check/`.
 
+The user also completed a short manual trial on the supplied real HEVC clip with no reported
+problems in playback/audio, timeline/frame stepping, minimize/restore or readability. The user
+observed playback pausing while minimized, which is current behavior. This is subjective manual
+acceptance, not a sustained A/V drift or resource measurement. Timeline orientation improvements
+are recorded in the progress ledger's UI TODO; they do not reopen the presentation proof gate.
+
 Visual tests start only after actual foreground activation. Each accepted screenshot has the same
 settled, confirmed present ID before and after capture. A delayed repaint invalidates that attempt;
 at most three captures are attempted, preserving discarded attempts and never reissuing the seek or

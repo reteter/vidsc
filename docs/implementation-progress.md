@@ -12,6 +12,10 @@ exhaustive VFR adjacency passes **108/108**. See [presentation acceptance](valid
 The default Release pipeline also passes source/native manifest checks, CLI/barcodes, packaged
 scene windows, application smoke and promotion (`artifacts/m1-qualified-release-build.log`).
 The B6 `Test-Delivery` scenario has not been run; the Release pipeline does not close it.
+The user completed the supplied HEVC clip's manual playback/audio, timeline/frame-step,
+minimize/restore and readability trial without problems. Playback pauses while minimized.
+Long visible-window benchmarks are on hold until a suitable time is agreed with the user;
+do not activate test windows or start those runs before that coordination is complete.
 
 ## Current workflow
 
@@ -63,6 +67,16 @@ features. Neither B4 nor B6 requires implementing the later production editor/ex
 M2 progressive coverage/dependency classification, M3 export transactions and later accurate-cut
 stages remain future work. The existing CLI copy check is a packaging/contention workload, not the
 M3 exporter. Do not start those stages in this session; stop after M1 and its tests/retrospective.
+
+## UI TODO — timeline orientation
+
+User feedback from the successful manual trial on 14 October 2026; defer implementation to the
+timeline design increment, without expanding the remaining M1 acceptance scope:
+
+- Show the zoom scale clearly, for example a zoom factor and/or time per visible division.
+- Add a horizontal scrollbar for moving the viewport when zoomed in.
+- Show the visible viewport's position and extent relative to the entire clip, for example a
+  compact overview with a highlighted range. Keep it synchronized with scrolling and zoom.
 
 ## Session continuation
 
