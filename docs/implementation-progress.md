@@ -2,7 +2,9 @@
 
 Updated: 14 October 2026. Baseline: `e725ace` (M0 bundle and minimal M1 prototype).
 
-This ledger records implementation increments. The acceptance gates in
+This ledger records verified increments and evidence, not a parallel task backlog.
+[GitHub Issues](https://github.com/reteter/vidsc/issues) is authoritative for current work status,
+dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
 Current status: **M1 presentation sub-gate accepted; full M1 OPEN** for real-media B1–B6 and
@@ -35,10 +37,15 @@ pre-launch setup-failure report path were checked; full B6 remains unrun and def
 
 ## Current workflow
 
-The parent agent owns integration, verification, documentation and local commits. Implementation
-and test subagents use `gpt-6.1-sol` with low effort; design and review subagents use the same model
-with high effort. Shared files have a single implementation owner. The project `opencode-delegate`
-skill is not used in this session. Commit each significant verified increment locally; do not push.
+Start from the relevant GitHub issue and keep its status, dependencies and evidence current.
+Commit each significant verified increment locally with `Refs #N`; do not push without the user's
+request. Keep `opencode-delegate` unused. Delegation is not automatic.
+
+The issue-tracking migration ([#21](https://github.com/reteter/vidsc/issues/21)) created 21 issues,
+10 plan milestones and 26 prefixed labels. Remote content, milestone assignments, single-type/status
+classification and execution restrictions were read back and checked. Local documentation passed
+`git diff --check`; no application tests or measurements were needed or run. Existing default labels
+were retained. GitHub payload files use literal UTF-8 and gh file inputs; no project dependency was added.
 
 ## Increments
 
@@ -59,6 +66,14 @@ frame, safe stream-copy cuts or exact editing. Full-file analysis is opt-in; ope
 not require it. Indexing shares the single owned media-job slot with scene/CLI checks.
 
 ## Remaining gates and next dependency
+
+Track B1-B6 in [#1](https://github.com/reteter/vidsc/issues/1),
+[#2](https://github.com/reteter/vidsc/issues/2), [#3](https://github.com/reteter/vidsc/issues/3),
+[#4](https://github.com/reteter/vidsc/issues/4), [#5](https://github.com/reteter/vidsc/issues/5),
+and [#6](https://github.com/reteter/vidsc/issues/6); bounded visual acceptance is
+[#7](https://github.com/reteter/vidsc/issues/7), and the retrospective is
+[#8](https://github.com/reteter/vidsc/issues/8). The statements below preserve the migration baseline;
+consult issues for subsequent status changes.
 
 M0 is complete; full M1 remains open. The maintained pinned Flyleaf source now supplies a qualified
 read-only `IObservedPresentationSource` getter, with hook status `Proven`. Each read revalidates
@@ -84,15 +99,12 @@ M2 progressive coverage/dependency classification, M3 export transactions and la
 stages remain future work. The existing CLI copy check is a packaging/contention workload, not the
 M3 exporter. Do not start those stages in this session; stop after M1 and its tests/retrospective.
 
-## UI TODO — timeline orientation
+## Timeline feedback migration
 
-User feedback from the successful manual trial on 14 October 2026; defer implementation to the
-timeline design increment, without expanding the remaining M1 acceptance scope:
-
-- Show the zoom scale clearly, for example a zoom factor and/or time per visible division.
-- Add a horizontal scrollbar for moving the viewport when zoomed in.
-- Show the visible viewport's position and extent relative to the entire clip, for example a
-  compact overview with a highlighted range. Keep it synchronized with scrolling and zoom.
+The 14 October manual-trial feedback is tracked in [#9](https://github.com/reteter/vidsc/issues/9)
+(zoom scale), [#10](https://github.com/reteter/vidsc/issues/10) (horizontal scrollbar), and
+[#11](https://github.com/reteter/vidsc/issues/11) (viewport overview), under the M5a epic
+[#16](https://github.com/reteter/vidsc/issues/16). This does not expand M1 acceptance scope.
 
 ## Session continuation
 

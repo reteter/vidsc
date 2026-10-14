@@ -59,3 +59,13 @@ Split: `Vidsc.App` (WPF), `Vidsc.Core` (contracts), `Vidsc.Media` (operations). 
 ## Working style
 
 Communicate in **Polish**; code, comments, documents and commits in **English**. Keep changes simple; run minimal relevant verification and report gaps. Keep this file concise: details/evidence belong in `docs`, generated media/logs in ignored artifacts.
+
+## GitHub work tracking
+
+- [GitHub Issues](https://github.com/reteter/vidsc/issues) is authoritative for remaining work, status, dependencies and deferrals. The plan defines requirements; `docs/validation` holds evidence; `docs/implementation-progress.md` records verified increments and links, not a second backlog.
+- Start by reading the relevant issue and comments; list open issues if none is supplied. Create or refine an issue before substantial work, check for duplicates, and keep its scope, acceptance criteria, dependencies and verification current. Use English for issue content.
+- Use exactly one `type:*` and one `status:*` on open issues, with relevant `area:*` labels and a plan milestone when applicable. Hooks use `area:hooks`; refine `type:todo` into `type:task` in place. Replace status labels instead of accumulating them. See [workflow and gh recipes](docs/github-workflow.md).
+- `needs:user-signal` prohibits execution until the user explicitly resumes it. Issues and milestones never expand authorized scope: long measurements/active-window tests remain deferred, and implementation stops at M1 plus retrospective until the user changes that scope.
+- Routine issue creation, comments, labels and status updates within authorized project work are part of the workflow. Use authenticated `gh` with explicit `--repo reteter/vidsc` or `repos/reteter/vidsc` API paths. Git push still requires the user's request. Do not change global Git/gh settings.
+- Create literal UTF-8 Markdown/JSON payload files under ignored `artifacts` with `apply_patch`; send them using `--body-file` or `gh api --input`. Never interpolate multiline bodies into PowerShell command strings or rewrite documents through shell string replacements. Use `-NoProfile`/`login:false` for shell calls.
+- Close completed issues only with satisfied criteria, minimal relevant verification and a commit/evidence reference. Remove `status:*` on closure; distinguish completion from not-planned/duplicate closure. Use `Refs #N` in local commits and explicitly report unpublished commits in GitHub. If GitHub is unavailable, report pending synchronization without claiming it succeeded.
