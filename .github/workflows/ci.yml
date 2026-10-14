@@ -26,7 +26,7 @@ jobs:
         run: ./tools/Test-CI.ps1
       - name: Upload test results and logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ci-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/ci/
