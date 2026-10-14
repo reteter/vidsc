@@ -1,6 +1,6 @@
 # vidsc implementation plan
 
-Date: 14 October 2026. Revision: **2 — approved review incorporated**. Status: **planned; application implementation has not started**.
+Date: 14 October 2026. Revision: **2 — approved review incorporated**. Status: **M0 and minimal M1 implemented; full M1 acceptance remains open**. See [implementation progress](implementation-progress.md) for verified increments and the current work order.
 
 Basis: [video architecture research](research/2026-10-14-video-architecture.md), including its read-only inspections of the two user-supplied files. The research contains primary references and distinguishes verified observations from proposed performance targets. This plan turns those findings into implementation tasks; it does not repeat or independently refresh dependency-version claims.
 
@@ -357,7 +357,7 @@ Gate: the packaged app opens/plays/saves/reopens, runs scenes and passes both ex
 
 ## 6. Build and run contract to implement
 
-No runnable source or existing project workflow currently exists. The following are planned entry points, to be made executable and verified in M0:
+The M0 build/run entry points are implemented and verified in the [M0/M1 validation record](validation/2026-10-14-m0-m1.md). The table preserves the intended contract; `Test-Media.ps1` and `Measure-Media.ps1` remain planned:
 
 | Entry point, relative to `projects/vidsc` | Behavior |
 | --- | --- |

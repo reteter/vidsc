@@ -3,14 +3,28 @@
 Windows x64 video navigator and trimmer: C# / .NET 10 / WPF / Flyleaf, with a separate FFmpeg tool
 set and a local PySceneDetect/PyAV worker.
 
-**Current state: M0 scaffold + minimal M1 playback prototype.** The application builds, runs and
-plays video; the exact-frame editing, indexing and export features (M2–M8) are **not** implemented.
+**Current state: M0 scaffold + minimal M1 playback prototype with read-only timeline navigation.**
+The application builds, runs and plays video. Optional bounded packet/frame indexing supports
+navigation; exact editing and production export are not implemented. Full M1 and M2–M8 acceptance
+gates remain open. See [implementation progress](docs/implementation-progress.md).
 See [the validation record](docs/validation/2026-10-14-m0-m1.md) for exactly what was measured and
 [the implementation plan](docs/implementation-plan.md) for the full roadmap.
 
 M0 and the runnable prototype have passed native completion checks (120 tests, staged Release and a
 fresh package directory with spaces). The full M1 gate remains pending: there is no proven
 presented-frame hook or completed B1–B6 benchmark set.
+
+The timeline supports click/drag seeking, zoom, Shift-drag panning, Fit and Center playhead.
+Choose **Build keyframes** for packet candidates or **Build frame index** for a complete decoded
+frame map. These are explicit whole-file scans, cancellable and bounded; opening a clip does not
+require them. Up/wheel up selects the next indexed keyframe candidate; Down/wheel down selects
+the previous one. Left/Right steps a frame. Navigation works over the preview and timeline;
+editing controls and diagnostic scrolling retain their normal behavior.
+
+Position entry supports milliseconds, nominal `HH:MM:SS:FF` and zero-based file frame indices.
+Frame index mode requires the complete ordered PTS map, including for VFR. Nominal timecode is
+a display/input convention; neither it nor packet key flags certify exact presented frames or
+safe export cuts. Scene/CLI checks and indexing share one media-job slot.
 
 ---
 
@@ -53,7 +67,13 @@ refuses instead of stopping it.
 ```powershell
 dotnet build Vidsc.slnx -c Release
 dotnet test  Vidsc.slnx -c Release
+pwsh -NoProfile -File tools/Test-Navigation.ps1
 ```
+
+The navigation script checks deterministic CFR/fractional/VFR/offset timing, bounded indexing and
+damaged-source rejection against the packaged reader. Benchmark tooling and the remaining M1
+experiment are tracked in [implementation progress](docs/implementation-progress.md); a short
+harness run does not constitute the full performance acceptance suite.
 
 ## What the build produces
 
