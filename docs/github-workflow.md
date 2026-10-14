@@ -30,14 +30,32 @@ Use English. Keep the body proportional to the work, with a goal, scope, accepta
 2. Confirm scope and restrictions, then change its single status to `in-progress` when work starts.
 3. Record material findings, blockers and new tasks in issues. Do not post routine command transcripts.
 4. Run the smallest relevant verification and update durable evidence when warranted.
-5. Commit significant verified work locally using `Refs #N`. Push requires a separate user request.
-6. Post the verification result, evidence and commit ID, explicitly saying if the commit is local/unpublished. Close only when acceptance criteria are met; remove status labels. Use the not-planned closure reason for rejected/duplicate work and link any replacement. Reopening requires a status label again.
+5. Commit significant verified work using `Refs #N`, push its feature branch and create/update the PR under standing authorization.
+6. Post verification, evidence, commit and PR links. Keep code/document delivery issues open until merge, with `status:in-progress` and an explicit awaiting-user-merge note. Use `Closes #N` in the PR when merging completes the issue. Evidence-only tasks can close upon acceptance. Remove status labels after closure; use not-planned for rejected/duplicate work and link any replacement. Reopening requires a status label again.
 
-An issue may be completed locally before publication; this must be explicit in its closing record. Do not use auto-closing commit keywords to imply an unpublished change is already on GitHub. If connectivity fails, continue independent authorized work and report the exact pending synchronization.
+The initial migration issue #21 was closed under the earlier local-completion policy; retain that historical record. New delivery issues follow the merge-based closure rule above. If connectivity fails, continue independent authorized work and report the exact pending synchronization.
+
+## Branches and pull requests
+
+The user grants standing authorization to create/maintain branches, commit, push normally to origin and open/update PRs for significant verified increments. This replaces the earlier requirement to ask before every push. A significant increment is a coherent, reviewable bug fix, feature, validation outcome or workflow/documentation change; do not create a PR per trivial edit or wait for an entire milestone.
+
+1. Inspect status, current branch, relevant issue and open PRs. Fetch origin and confirm the default base (currently `master`). Start `codex/<issue-or-topic>` from current `origin/master`. Preserve existing changes/commits; use a separate checkout when needed. Never reset unrelated work.
+2. Reuse one branch and PR for one coherent scope. Additional review fixes go into that branch. Start independent work from the default branch; make dependent/stacked work explicit rather than silently carrying another PR's changes.
+3. Verify the smallest relevant scope and inspect the final diff. Documentation-only changes use diff/link checks locally; hosted CI still runs. Follow docs/ci.md for code/script/dependency changes. Host tests remain deferred until the user resumes them.
+4. Push with upstream tracking and create a PR against the confirmed base. Use a draft while acceptance is incomplete; a normal PR when ready for review. Describe the problem/result, linked issues, verification and material limits. Attach every PR to the current Codex chat. Never push directly to master or force-push.
+5. Follow current-head CI and review results in the active session. Fix in-scope failures and real findings, reply with evidence and resolve addressed threads. Re-run only affected checks or justified failures. Use PR Completion's watcher when using its completion workflow; preserve its cursor/output under ignored artifacts. Do not claim a reviewer approved merely because checks are green. Do not silently add reviewer bots, protection rules or schedules.
+6. At readiness, report the URL, head SHA, CI/review evidence and remaining limits, then await the user's merge decision. No merge, auto-merge or queue enrollment is allowed without explicit approval for that PR and head. Any new head invalidates approval. The user may merge in GitHub; if asking the agent to land, PR Completion's validated landing helper performs the protected action after approval. Never bypass protections or use admin privileges.
+7. Once GitHub confirms merge, fetch and fast-forward the local default branch only when safe. Remove a task branch only after confirming its work is merged and no other checkout/work depends on it; use safe local deletion, never forced deletion. Remote deletion requires the user's cleanup instruction or repository auto-delete policy. Confirm issue closure and remove obsolete status labels.
+
+Code Review provides PR inspection, diffs, checks and private review assistance. PR Completion coordinates preparation, CI/review repair and conflicts. Neither plugin supplies the user's merge decision. Routine PR follow-up in the active session is authorized; recurring/background monitoring requires a separate request. If a deferred host test is necessary for the change, keep the PR draft or explicitly blocked instead of inferring acceptance from CI.
+
+## Connector-first integration
+
+Prefer structured GitHub connector operations for supported issue/PR reads and writes, selecting the `reteter` account for this repository. Bodies are passed directly as data, avoiding shell quoting and temporary payload files. Use `gh` for unsupported operations, GitHub API gaps and workflows that explicitly require the CLI (including PR Completion). Git operations remain local Git commands. Do not duplicate a successful write through both paths; on an ambiguous response, read back before retrying.
 
 ## Low-ceremony gh recipes
 
-Use the existing authenticated `gh`; no wrapper, new runtime dependency, token extraction, or global configuration is needed. Run PowerShell without its profile (`login:false` in the command tool). Always specify this repository.
+When CLI fallback is needed, use the existing authenticated `gh`; no wrapper, new runtime dependency, token extraction, or global configuration is needed. Run PowerShell without its profile (`login:false` in the command tool). Always specify this repository.
 
 ```powershell
 gh issue list --repo reteter/vidsc --state open --limit 100 --json number,title,labels,milestone

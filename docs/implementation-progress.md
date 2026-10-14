@@ -38,8 +38,12 @@ pre-launch setup-failure report path were checked; full B6 remains unrun and def
 ## Current workflow
 
 Start from the relevant GitHub issue and keep its status, dependencies and evidence current.
-Commit each significant verified increment locally with `Refs #N`; do not push without the user's
-request. Keep `opencode-delegate` unused. Delegation is not automatic.
+Commit each significant verified increment with `Refs #N` on a `codex/` branch. The user now
+authorizes ordinary feature-branch pushes and PR creation/maintenance; only the user decides merge.
+See [#22](https://github.com/reteter/vidsc/issues/22) and [the workflow](github-workflow.md).
+Keep `opencode-delegate` unused. Delegation is not automatic. GitHub connector operations are
+preferred where supported; gh remains the CLI fallback. This documentation increment uses local
+diff/link checks and hosted CI, without resuming host tests.
 
 The issue-tracking migration ([#21](https://github.com/reteter/vidsc/issues/21)) created 21 issues,
 10 plan milestones and 26 prefixed labels. Remote content, milestone assignments, single-type/status

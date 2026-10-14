@@ -14,7 +14,7 @@ This workflow becomes active when vidsc is the repository root; GitHub does not 
 
 A green CI run establishes compilation, unit checks and promotion rollback behavior. It does not establish a runnable Release bundle, native dependency packaging, presented-frame correctness, B1–B6 performance/resource acceptance or M1 completion. Those existing Windows/native checks remain separate and deferred in CI. `tools/Build-Release.ps1` and `run.bat` retain their existing build, bundle and launch roles.
 
-Locally, run the smallest relevant tests after behavior changes; run this full entry point for CI/script changes, dependency or solution changes, or before publishing a branch. A passing run need not be repeated without another change or unresolved failure. Use the existing Release/native validation only when changing playback, GPU integration, media jobs, packaging or lifecycle behavior that those checks actually cover. Documentation-only changes normally need no build. Do not run resource-heavy local build/test checks concurrently against the same checkout.
+Locally, run the smallest relevant tests after behavior changes; run this full entry point for CI/script changes, dependency or solution changes, or before publishing a branch with code changes. A passing run need not be repeated without another change or unresolved failure. Use the existing Release/native validation only when changing playback, GPU integration, media jobs, packaging or lifecycle behavior that those checks actually cover. Documentation-only branches need local diff/link checks, not a build; normal hosted CI still runs on push/PR. Do not run resource-heavy local build/test checks concurrently against the same checkout.
 
 ## Hosted verification
 
