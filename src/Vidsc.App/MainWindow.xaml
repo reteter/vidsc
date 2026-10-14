@@ -64,7 +64,8 @@
           <Button Content="+" Width="32" Click="OnZoomIn" />
           <Button Content="Fit" Width="48" Click="OnTimelineFit" />
           <Button Content="Center playhead" Width="110" Click="OnTimelineCenter" />
-          <Button Content="Build keyframes" Margin="12,0,4,0" Command="{Binding BuildKeyframesCommand}" />
+          <Button Content="Inspect neighborhood" Margin="12,0,4,0" Command="{Binding InspectNeighborhoodCommand}" />
+          <Button Content="Build keyframes" Margin="0,0,4,0" Command="{Binding BuildKeyframesCommand}" />
           <Button Content="Build frame index" Command="{Binding BuildFrameIndexCommand}" />
           <Button Content="Cancel index" Margin="4,0" Command="{Binding CancelIndexCommand}" />
         </StackPanel>
@@ -72,6 +73,8 @@
         <TextBlock Text="Click/drag: seek • Shift-drag: pan • ↑ / wheel up: next keyframe • ↓ / wheel down: previous • ← / →: frame" Foreground="#9FB3C8" />
         <TextBlock Text="Navigation shortcuts work on the video surface and timeline. Text entry, rotation and volume keep their own controls." Foreground="#9FB3C8" />
         <TextBlock Text="{Binding NavigationReason}" TextWrapping="Wrap" Foreground="#F0B429" />
+          <TextBlock Text="{Binding InspectionSummary}" TextWrapping="Wrap" Foreground="#9FB3C8" />
+          <TextBlock Text="{Binding InspectionCapabilities}" TextWrapping="Wrap" Foreground="#9FB3C8" />
         <TextBlock Text="{Binding TimeModeHint}" TextWrapping="Wrap" Foreground="#9FB3C8" />
 
         <Grid Margin="0,6,0,0">

@@ -34,6 +34,7 @@ public sealed class PresentationBoundaryMap
     public long? TerminalEndPts { get; }
     public string? TerminalEndProvenance { get; }
     public int FrameCount => _pts.Count;
+    public IReadOnlyList<long> FramePts => _pts;
     public bool Contains(long rawPts) => FindIndex(rawPts) >= 0;
 
     /// <summary>Returns a neighboring raw PTS only when the current frame identity is present exactly.</summary>

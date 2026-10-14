@@ -1,202 +1,112 @@
-"""vidsc packaged scene-detection job.
-
-Runs inside the pinned local PySceneDetect + PyAV runtime and prints a single JSON document.
-
-Contract (see docs/validation/2026-10-14-m0-m1.md):
-  * every value is produced by the pinned packages in this runtime;
-  * scene positions are reported as seconds derived from frame indices divided by the stream's
-    nominal frame rate, which is APPROXIMATE for variable-frame-rate material;
-  * `position_precision` states that limitation explicitly instead of implying frame accuracy;
-  * `detector_config` records the parameter the detector actually received (`threshold` for content,
-    `adaptive_threshold` for adaptive);
-  * a positive `--duration` always bounds the scan (`--start 0 --duration N` included); the reported
-    `framesProcessed` / `lastProcessedFrame` come from the video position after detection.
-
-Usage:
-  python vidsc_scene_job.py --input <video> [--output <json>] [--detector content|adaptive]
-                            [--threshold 27.0] [--min-scene-len 15] [--start 0.0] [--duration 0.0]
-"""
-
+"""Bounded scene proposals from decoded presentation timestamps, never nominal FPS."""
 from __future__ import annotations
-
 import argparse
+import hashlib
 import json
-import platform
-import sys
-import traceback
+import math
+import os
+from fractions import Fraction
+from importlib.metadata import version
 
 
-def _version(module_name: str) -> str | None:
-    try:
-        from importlib import metadata
-
-        return metadata.version(module_name)
-    except Exception:
-        return None
-
-
-def build_result(**kwargs) -> dict:
-    return kwargs
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="vidsc packaged scene-detection job")
+def main():
+    parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output")
-    parser.add_argument("--detector", default="content", choices=["content", "adaptive"])
-    parser.add_argument("--threshold", type=float, default=27.0)
+    parser.add_argument("--job-id", default="standalone")
+    parser.add_argument("--source-id", default="standalone")
+    parser.add_argument("--generation", type=int, default=0)
+    parser.add_argument("--stream", type=int, default=0)
+    parser.add_argument("--origin", type=float, default=0)
+    parser.add_argument("--detector", choices=["content", "adaptive"], default="content")
+    parser.add_argument("--threshold", type=float, default=27)
     parser.add_argument("--min-scene-len", type=int, default=15)
-    parser.add_argument("--start", type=float, default=0.0)
-    parser.add_argument("--duration", type=float, default=0.0)
+    parser.add_argument("--start", type=float, default=0)
+    parser.add_argument("--duration", type=float, default=0)
     args = parser.parse_args()
-
-    result: dict = {
-        "schemaVersion": 1,
-        "source": args.input,
-        "detector": args.detector,
-        "threshold": args.threshold,
-        "detectorConfig": None,
-        "minSceneLenFrames": args.min_scene_len,
-        "analyzedStartSeconds": args.start,
-        "analyzedDurationSeconds": args.duration,
-        "analyzedEndSeconds": None,
-        "framesProcessed": 0,
-        "lastProcessedFrame": None,
-        "lastProcessedSeconds": None,
-        "python": sys.executable,
-        "pythonVersion": platform.python_version(),
-        "scenedetectVersion": _version("scenedetect"),
-        "pyavVersion": _version("av"),
-        "backend": None,
-        "frameRateNominal": None,
-        "timeBaseNumerator": None,
-        "timeBaseDenominator": None,
-        "positionPrecision": None,
-        "positionOrigin": "source-relative",
-        "scenes": [],
-        "notes": [],
-        "success": False,
-        "error": None,
-    }
-
+    result = dict(schemaVersion=2, jobId=args.job_id, source=args.input,
+        sourceIdentity=args.source_id, generation=args.generation, streamIndex=args.stream,
+        analyzedStartSeconds=args.start, analyzedDurationSeconds=args.duration,
+        analyzedEndSeconds=args.start + args.duration if args.duration > 0 else None,
+        sourceOriginSeconds=args.origin, positionOrigin="native-pts-minus-explicit-origin",
+        positionPrecision="decoded-frame-pts; final end is last observed PTS, not presentation end",
+        detector=args.detector, threshold=args.threshold, minSceneLenFrames=args.min_scene_len,
+        backend="pyav", scaleColorPolicy="native-size-bgr24", decoderThreads=2,
+        scenes=[], success=False, error=None)
     try:
-        from scenedetect import open_video, SceneManager
+        for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            os.environ[name] = "2"
+        import av
+        from scenedetect import FrameTimecode
         from scenedetect.detectors import AdaptiveDetector, ContentDetector
-    except Exception as exc:  # pragma: no cover - environment failure path
-        result["error"] = f"import scenedetect failed: {exc}"
-        result["notes"].append("PySceneDetect is not importable in this runtime.")
-        _emit(result, args.output)
-        return 2
-
-    try:
-        video = open_video(args.input, backend="pyav")
-        result["backend"] = "pyav"
-    except Exception as exc:
-        result["error"] = f"open_video(backend='pyav') failed: {exc}"
-        result["notes"].append("The PyAV backend could not open the source; no fallback was used.")
-        _emit(result, args.output)
-        return 3
-
-    try:
-        nominal_fps = float(video.frame_rate)
-        result["frameRateNominal"] = nominal_fps
-
-        # PyAV exposes the container time base; it is recorded when available and never guessed.
-        try:
-            stream = getattr(video, "stream", None)
-            time_base = getattr(stream, "time_base", None)
-            if time_base is not None:
-                result["timeBaseNumerator"] = int(time_base.numerator)
-                result["timeBaseDenominator"] = int(time_base.denominator)
-        except Exception:
-            result["notes"].append("Container time base was not exposed by this backend.")
-
-        result["positionPrecision"] = (
-            "scene start/end seconds are frame_index / nominal_frame_rate and are APPROXIMATE for "
-            "variable-frame-rate material; map to a verified frame boundary before use"
-        )
-
-        # The detector's ACTUAL parameter is wired here: an adaptive detector receives the requested
-        # threshold as `adaptive_threshold` (it does not accept `threshold`), and the true configuration
-        # is reported so a caller changing --threshold can see the effect.
-        detector_config: dict = {"type": args.detector, "minSceneLenFrames": args.min_scene_len}
-
-        if args.detector == "content":
-            detector = ContentDetector(threshold=args.threshold, min_scene_len=args.min_scene_len)
-            detector_config["parameter"] = "threshold"
-            detector_config["contentThreshold"] = args.threshold
-        else:
-            detector = AdaptiveDetector(adaptive_threshold=args.threshold, min_scene_len=args.min_scene_len)
-            detector_config["parameter"] = "adaptive_threshold"
-            detector_config["adaptiveThreshold"] = args.threshold
-
-        result["detectorConfig"] = detector_config
-
-        manager = SceneManager()
-        manager.add_detector(detector)
-
-        # `end_time` is derived whenever a positive duration is requested, including the very common
-        # --start 0 --duration N case where a `start > 0` test would previously have been false and the
-        # whole source would have been scanned while the report still claimed the requested duration.
-        start_time = args.start if args.start > 0 else None
-        end_time = (args.start + args.duration) if args.duration > 0 else None
-        result["analyzedEndSeconds"] = end_time
-
-        detect_kwargs: dict = {}
-        if start_time is not None:
-            video.seek(start_time)
-        if end_time is not None:
-            detect_kwargs["end_time"] = end_time
-
-        result["framesProcessed"] = manager.detect_scenes(video, **detect_kwargs)
-
-        # The video position after detection identifies the last frame actually decoded, which proves
-        # the requested window bounded the traversal. Inspecting only the report field would not.
-        position = getattr(video, "position", None)
-        if position is not None:
-            try:
-                last_frame = int(position.frame_num)
-                result["lastProcessedFrame"] = last_frame
-                result["lastProcessedSeconds"] = float(position.seconds)
-            except Exception:
-                result["notes"].append("The video position after detection could not be read.")
-
-        scene_list = manager.get_scene_list()
-
-        scenes = []
-        for index, (scene_start, scene_end) in enumerate(scene_list):
-            scenes.append(
-                {
-                    "index": index,
-                    "startFrame": int(scene_start.get_frames()),
-                    "endFrame": int(scene_end.get_frames()),
-                    "startSeconds": float(scene_start.get_seconds()),
-                    "endSeconds": float(scene_end.get_seconds()),
-                }
-            )
-
-        result["scenes"] = scenes
-        result["sceneCount"] = len(scenes)
-        result["success"] = True
-        result["notes"].append(
-            "Cut positions are detector proposals, not verified access points or safe cut points."
-        )
+        import cv2
+        cv2.setNumThreads(2)
+        if (not all(math.isfinite(v) for v in [args.start, args.duration, args.origin, args.threshold])
+                or args.start < 0 or args.duration < 0 or args.min_scene_len < 1):
+            raise ValueError("Invalid interval or detector configuration")
+        with open(__file__, "rb") as driver:
+            driver_hash = hashlib.sha256(driver.read()).hexdigest()
+        result["build"] = dict(pyav=version("av"), scenedetect=version("scenedetect"), driver=driver_hash)
+        detector = (ContentDetector(threshold=args.threshold, min_scene_len=args.min_scene_len)
+            if args.detector == "content" else
+            AdaptiveDetector(adaptive_threshold=args.threshold, min_scene_len=args.min_scene_len))
+        # Sequential decoding avoids backend seek/frame-number assumptions for VFR sources.
+        with av.open(args.input) as container:
+            stream = next(s for s in container.streams.video if s.index == args.stream)
+            stream.codec_context.thread_count = 2
+            result["timeBaseNumerator"] = stream.time_base.numerator
+            result["timeBaseDenominator"] = stream.time_base.denominator
+            result["frameRateNominal"] = float(stream.average_rate) if stream.average_rate else None
+            timestamps = []
+            cuts = []
+            end = args.start + args.duration if args.duration > 0 else math.inf
+            origin = Fraction(str(args.origin))
+            for frame in container.decode(stream):
+                if frame.pts is None or frame.time_base is None:
+                    raise ValueError("Decoded frame has no presentation timestamp/time base")
+                timestamp = frame.pts * frame.time_base - origin
+                seconds = float(timestamp)
+                if seconds < args.start:
+                    continue
+                if seconds >= end:
+                    break
+                if timestamps and timestamp <= timestamps[-1][0]:
+                    raise ValueError("Non-increasing presentation timestamps are unsupported")
+                if len(timestamps) >= 250000:
+                    raise ValueError("Analysis exceeds 250000 decoded frames; request a shorter interval")
+                timestamps.append((timestamp, frame.pts, frame.time_base))
+                # PySceneDetect 0.7 uses FrameTimecode even for detector-local frame ordinals.
+                # This synthetic clock only enforces minimum frame counts; source times always
+                # come from the decoded PTS table, never from FrameTimecode seconds or FPS.
+                ordinal = FrameTimecode(len(timestamps) - 1, fps=1.0)
+                cuts.extend(detector.process_frame(ordinal, frame.to_ndarray(format="bgr24")))
+                if len(cuts) > 20000:
+                    raise ValueError("Analysis exceeds 20000 scene cuts; request a shorter interval")
+            if timestamps:
+                cuts.extend(detector.post_process(FrameTimecode(len(timestamps) - 1, fps=1.0)))
+                boundaries = sorted(set([0] + [int(c) for c in cuts if 0 < int(c) < len(timestamps)]))
+                for index, start in enumerate(boundaries):
+                    stop = boundaries[index + 1] if index + 1 < len(boundaries) else len(timestamps) - 1
+                    a, b = timestamps[start], timestamps[stop]
+                    result["scenes"].append(dict(index=index, startFrame=start, endFrame=stop,
+                        startSeconds=float(a[0]), endSeconds=float(b[0]), startPts=a[1], endPts=b[1],
+                        timeBaseNumerator=a[2].numerator, timeBaseDenominator=a[2].denominator,
+                        endIsPresentationBoundary=index + 1 < len(boundaries)))
+                result["actualStartSeconds"] = float(timestamps[0][0])
+                result["lastProcessedSeconds"] = float(timestamps[-1][0])
+            result["framesProcessed"] = len(timestamps)
+            result["success"] = True
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
-        result["traceback"] = traceback.format_exc()
-        _emit(result, args.output)
-        return 4
-
-    _emit(result, args.output)
-    return 0
-
-
-def _emit(result: dict, output_path: str | None) -> None:
-    payload = json.dumps(result, indent=2)
-    if output_path:
-        with open(output_path, "w", encoding="utf-8") as handle:
+    payload = json.dumps(result, indent=2, allow_nan=False)
+    if len(payload.encode("utf-8")) > 4 * 1024 * 1024:
+        result.update(success=False, error="Scene report exceeds 4 MiB", scenes=[])
+        payload = json.dumps(result, indent=2, allow_nan=False)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as handle:
             handle.write(payload)
     print(payload)
+    return 0 if result["success"] else 4
 
 
 if __name__ == "__main__":

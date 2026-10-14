@@ -15,7 +15,7 @@ using Vidsc.Media.Tooling;
 namespace Vidsc.App.ViewModels;
 
 /// <summary>
-/// View model for the M1 prototype shell.
+/// Playback and opt-in media inspection shell.
 /// </summary>
 /// <remarks>
 /// Separation rules enforced here:
@@ -25,9 +25,8 @@ namespace Vidsc.App.ViewModels;
 /// itself is still detached and disposed on the dispatcher by the window.</description></item>
 /// <item><description>The slider's <i>desired</i> value, the <i>pending</i> request, the engine's
 /// <i>completion echo</i> and the <i>observed presentation</i> are four distinct readouts. The
-/// observed row stays empty because the pinned engine has no proven hook.</description></item>
-/// <item><description>Exact In/Out and export stay disabled with a stated reason until the
-/// presented-frame hook is proven.</description></item>
+/// observed row uses only the qualified presented-frame hook.</description></item>
+/// <item><description>The interval editor and exporter remain separate later stages.</description></item>
 /// <item><description>At most one owned media job (packaged CLI check or scene check) runs at a time;
 /// both commands are disabled while it runs, and every child process is bound to the lifetime
 /// cancellation token that shutdown cancels.</description></item>
@@ -50,6 +49,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly SceneWorker? _sceneWorker;
     private readonly Func<string, CancellationToken, Task<SourceMediaInfo?>>? _probeOverride;
     private readonly Func<string, MediaStreamInfo, long, bool, CancellationToken, Task<NavigationMap>>? _navigationOverride;
+    private readonly Func<string, ProgressiveInspectionRequest, CancellationToken, Task<ProgressiveInspectionSnapshot>>? _progressiveOverride;
+    private readonly Func<SceneJobRequest, CancellationToken, Task<SceneJobResult>>? _sceneOverride;
     private readonly RelayCommand _openCommand;
     private readonly RelayCommand _playPauseCommand;
     private readonly RelayCommand _stepForwardCommand;
@@ -74,7 +75,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _openCancellation;
     private long _openToken;
     private SourceMediaInfo? _mediaInfo;
+    private InspectionSourceIdentity? _metadataIdentity;
     private NavigationMap? _navigationMap;
+    private ProgressiveInspectionSnapshot? _progressiveInspection;
+    private IReadOnlyList<PacketAccessPointEvidence> _accessPoints = Array.Empty<PacketAccessPointEvidence>();
+    private IReadOnlyList<long> _progressiveKeyframeTicks = Array.Empty<long>();
+    private string _inspectionSummary = "Neighborhood not inspected. Analysis is opt-in.";
     private CancellationTokenSource? _indexCancellation;
     private NavigationTimeMode _timeMode;
     private long _navigationTarget;
@@ -120,7 +126,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AppPaths paths,
         Dispatcher dispatcher,
         Func<string, CancellationToken, Task<SourceMediaInfo?>>? probeOverride = null,
-        Func<string, MediaStreamInfo, long, bool, CancellationToken, Task<NavigationMap>>? navigationOverride = null)
+        Func<string, MediaStreamInfo, long, bool, CancellationToken, Task<NavigationMap>>? navigationOverride = null,
+        Func<string, ProgressiveInspectionRequest, CancellationToken, Task<ProgressiveInspectionSnapshot>>? progressiveOverride = null,
+        Func<SceneJobRequest, CancellationToken, Task<SceneJobResult>>? sceneOverride = null)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _toolset = toolset ?? throw new ArgumentNullException(nameof(toolset));
@@ -128,6 +136,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         _probeOverride = probeOverride;
         _navigationOverride = navigationOverride;
+        _progressiveOverride = progressiveOverride;
+        _sceneOverride = sceneOverride;
 
         if (toolset.HasFfmpegCli)
             _ffmpeg = new FfmpegCli(toolset.FfmpegPath!, toolset.FfprobePath!);
@@ -153,6 +163,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         BuildKeyframesCommand = new RelayCommand(() => _mediaJobTask = BuildNavigationAsync(false), CanBuildNavigation);
         BuildFrameIndexCommand = new RelayCommand(() => _mediaJobTask = BuildNavigationAsync(true), CanBuildNavigation);
+        InspectNeighborhoodCommand = new RelayCommand(() => _mediaJobTask = InspectNeighborhoodAsync(), CanBuildNavigation);
         CancelIndexCommand = new RelayCommand(() => _indexCancellation?.Cancel(), () => _indexCancellation is not null);
         RefreshToolsetText();
         RefreshManifestText();
@@ -161,8 +172,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public RelayCommand BuildKeyframesCommand { get; }
     public RelayCommand BuildFrameIndexCommand { get; }
+    public RelayCommand InspectNeighborhoodCommand { get; }
     public RelayCommand CancelIndexCommand { get; }
-    public IReadOnlyList<long> KeyframeTicks => _navigationMap?.KeyframeTicks ?? Array.Empty<long>();
+    public string InspectionSummary { get => _inspectionSummary; private set => SetProperty(ref _inspectionSummary, value); }
+    public ProgressiveInspectionSnapshot? ProgressiveInspection => _progressiveInspection;
+    public IReadOnlyList<PacketAccessPointEvidence> AccessPoints => _accessPoints;
+    public string InspectionCapabilities
+    {
+        get
+        {
+            var video = _mediaInfo?.PrimaryVideo;
+            if (video is null) return "Inspection unavailable: no selected video stream.";
+            string timing = video.TimeBase is { IsPositive: true } ? "Rational source timing available." : "Exact timing unavailable: missing time base.";
+            string codec = video.CodecName is "h264" or "hevc" ? "AVC/HEVC access-point classification available; dependency safety requires additional evidence." : "Access-point dependency classification unavailable for this codec.";
+            string frames = _navigationMap?.HasFrameIndex == true ? "Complete presentation frame map available; EOF requires separate verification." : "Exact boundaries require a complete verified frame map; local traversals do not establish continuity.";
+            return $"{timing} {codec} {frames}";
+        }
+    }
+    public IReadOnlyList<long> KeyframeTicks => _navigationMap?.KeyframeTicks ?? _progressiveKeyframeTicks;
     public NavigationTimeMode[] TimeModes { get; } = Enum.GetValues<NavigationTimeMode>();
     public NavigationTimeMode TimeMode
     {
@@ -186,6 +213,80 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private bool CanBuildNavigation() => CanRunMediaJob() && _mediaInfo?.PrimaryVideo is not null;
 
+    private async Task InspectNeighborhoodAsync()
+    {
+        if (!CanBuildNavigation() || !TryBeginMediaJob()) return;
+        long generation = _openToken;
+        long seekVersion = Interlocked.Read(ref _navigationSeekVersion);
+        var cancellation = _mediaJobCancellation!;
+        _indexCancellation = cancellation;
+        CancelIndexCommand.RaiseCanExecuteChanged();
+        InspectionSummary = "Inspecting the playhead neighborhood…";
+        try
+        {
+            string path = _sourcePath!;
+            using var sourceGuard = _progressiveOverride is null || _metadataIdentity is not null
+                ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read) : null;
+            var info = _mediaInfo!;
+            var video = info.PrimaryVideo!;
+            if (video.TimeBase is not { IsPositive: true } timeBase)
+                throw new InvalidDataException("Selected video has no usable rational time base.");
+            var identity = _progressiveOverride is null || _metadataIdentity is not null
+                ? await Task.Run(() => InspectionSourceIdentity.Capture(path), cancellation.Token) : null;
+            if (identity is not null && identity.IdentityKey != _metadataIdentity?.IdentityKey)
+                throw new IOException("Source changed since metadata inspection. Reopen the source before analysis.");
+            long start = Math.Max(0, _navigationTarget - TimeSpan.FromSeconds(5).Ticks);
+            long end = checked(_navigationTarget + TimeSpan.FromSeconds(5).Ticks);
+            if (_durationTicks > 0) end = Math.Min(end, _durationTicks);
+            if (end <= start) throw new InvalidDataException("No positive inspection interval is available.");
+            var source = new ProgressiveSourceIdentity(identity?.IdentityKey ?? path, generation, video.Index, timeBase, info.ContainerStartTicks ?? 0);
+            var request = new ProgressiveInspectionRequest(source, start, end);
+            var result = await (_progressiveOverride is null
+                ? new FfprobeProgressiveReader(_toolset.FfprobePath!).ReadAsync(path, request, cancellation.Token, ObserveMediaProcess)
+                : _progressiveOverride(path, request, cancellation.Token));
+            IReadOnlyList<PacketAccessPointEvidence> accessPoints = Array.Empty<PacketAccessPointEvidence>();
+            string classificationNote = "";
+            if (_progressiveOverride is null && video.CodecName is "h264" or "hevc")
+            {
+                try
+                {
+                    accessPoints = await new FfprobeAccessPointReader(_toolset.FfprobePath!).ReadAsync(path,
+                        video.Index, (start + source.TimelineOriginTicks) / (double)TimeSpan.TicksPerSecond,
+                        cancellation.Token, ObserveMediaProcess, maxPackets: 1);
+                }
+                catch (IOException exception) when (exception is not NavigationProcessStuckException)
+                { classificationNote = " Payload classification unavailable: " + exception.Message; }
+            }
+            if (generation != _openToken || seekVersion != Interlocked.Read(ref _navigationSeekVersion) || cancellation.IsCancellationRequested) return;
+            if (result.Source != source) throw new InvalidDataException("Inspection returned evidence for a different source or stream.");
+            if (!result.IsComplete) throw new InvalidDataException("Inspection did not complete; no new evidence was published.");
+            if (identity is not null && !await Task.Run(identity.MatchesCurrentFile, cancellation.Token))
+                throw new IOException("Source changed during inspection; evidence discarded.");
+            if (generation != _openToken || seekVersion != Interlocked.Read(ref _navigationSeekVersion) || cancellation.IsCancellationRequested) return;
+            var merged = _progressiveInspection?.Source == source ? _progressiveInspection.Merge(result) : result;
+            var markers = merged.Packets.Where(p => p.IsKey && p.Pts.HasValue)
+                .Select(p => checked(TimeRescale.ToTicks(p.Pts!.Value, source.TimeBase) - source.TimelineOriginTicks))
+                .Distinct().Order().ToArray();
+            _progressiveInspection = merged;
+            _progressiveKeyframeTicks = Array.AsReadOnly(markers);
+            _accessPoints = accessPoints;
+            string classes = string.Join(", ", accessPoints.Select(p => p.Evidence.Kind).Distinct());
+            string coverage = result.HasRequestedDecodedContext ? "Requested decoded neighborhood covered." : "Requested decoded context incomplete; EOF remains unverified.";
+            InspectionSummary = $"{_progressiveInspection.Traversals.Count} local traversal(s), {_progressiveInspection.Packets.Count:N0} packet observations, {_progressiveInspection.Frames.Count:N0} frame observations. {coverage} NAL classes: {(classes.Length == 0 ? "unknown" : classes)}. Uninspected gaps and dependency safety remain unknown." + classificationNote;
+            OnPropertyChanged(nameof(ProgressiveInspection));
+            OnPropertyChanged(nameof(AccessPoints));
+            OnPropertyChanged(nameof(KeyframeTicks));
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            _mediaJobStuck = true;
+            InspectionSummary = $"Inspection process {exception.ProcessId} exit unconfirmed; media jobs remain blocked.";
+        }
+        catch (OperationCanceledException) { if (generation == _openToken) InspectionSummary = "Inspection cancelled; previous evidence retained."; }
+        catch (Exception exception) { if (generation == _openToken) InspectionSummary = "Inspection failed: " + exception.Message; }
+        finally { _indexCancellation = null; EndMediaJob(); CancelIndexCommand.RaiseCanExecuteChanged(); }
+    }
+
     private async Task BuildNavigationAsync(bool includeFrames)
     {
         if (!CanBuildNavigation() || !TryBeginMediaJob()) return;
@@ -198,6 +299,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         NavigationReason = includeFrames ? "Building full frame index (whole-file scan)…" : "Building keyframe candidates (explicit scan)…";
         try
         {
+            using var sourceGuard = _navigationOverride is null
+                ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read) : null;
+            if (_navigationOverride is null && InspectionSourceIdentity.Capture(path).IdentityKey != _metadataIdentity?.IdentityKey)
+                throw new IOException("Source changed since metadata inspection. Reopen the source before indexing.");
             var reader = new FfprobeNavigationReader(_toolset.FfprobePath!);
             NavigationMap map = await (_navigationOverride is null
                 ? reader.ReadAsync(path, info.PrimaryVideo!, info.ContainerStartTicks ?? 0, includeFrames, cancellation.Token, ObserveMediaProcess)
@@ -215,6 +320,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 ? $"{map.FrameCount:N0} file frames; {map.KeyframeTicks.Count:N0} keyframe candidates (not safe cuts)."
                 : (map.FrameIndexUnavailableReason ?? "Frame index not built; choose Build frame index.") + $" {map.KeyframeTicks.Count:N0} keyframe candidates (not safe cuts).";
             OnPropertyChanged(nameof(KeyframeTicks));
+            OnPropertyChanged(nameof(InspectionCapabilities));
             ReformatDesiredTime();
         }
         catch (NavigationProcessStuckException exception)
@@ -437,7 +543,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         _sourcePath = null;
         _mediaInfo = null;
+        _metadataIdentity = null;
         _navigationMap = null;
+        _progressiveInspection = null;
+        _accessPoints = Array.Empty<PacketAccessPointEvidence>();
+        _progressiveKeyframeTicks = Array.Empty<long>();
+        InspectionSummary = "Neighborhood not inspected. Analysis is opt-in.";
+        OnPropertyChanged(nameof(ProgressiveInspection));
+        OnPropertyChanged(nameof(InspectionCapabilities));
         _durationTicks = 0;
         _navigationTarget = 0;
         _navigationTargetOwned = false;
@@ -453,6 +566,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
+            using var sourceGuard = _probeOverride is null && _ffmpeg is not null
+                ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read) : null;
             OpenSourceResult result = await _engine.OpenAsync(path, cancellation.Token).ConfigureAwait(true);
 
             if (token != _openToken)
@@ -528,8 +643,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _ = OpenAsync(path);
     }
 
-    public void StepForward() { _navigationTargetOwned = false; EnqueueTransport("STEP forward", _engine.StepForward); }
-    public void StepBackward() { _navigationTargetOwned = false; EnqueueTransport("STEP backward", _engine.StepBackward); }
+    public void StepForward() { _indexCancellation?.Cancel(); _navigationTargetOwned = false; EnqueueTransport("STEP forward", _engine.StepForward); }
+    public void StepBackward() { _indexCancellation?.Cancel(); _navigationTargetOwned = false; EnqueueTransport("STEP backward", _engine.StepBackward); }
 
     public void Play() => EnqueueTransport("PLAY", _engine.Play);
 
@@ -543,6 +658,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void QueueNavigationSeek(long ticks, bool accurate)
     {
+        _indexCancellation?.Cancel();
         SetDesiredTicks(ticks, true);
         long version = Interlocked.Increment(ref _navigationSeekVersion);
         _navigationRequestWatermark = _engine.Positions.Snapshot().LastRequest?.Id.Value ?? 0;
@@ -631,6 +747,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         LastError = null;
+
+        if (_navigationMap?.HasFrameIndex == true && TimeMode != NavigationTimeMode.FrameIndex)
+        {
+            var resolver = new FrameBoundaryResolver(new PresentationBoundaryMap(
+                _engine.Positions.Generation.Value, _mediaInfo!.PrimaryVideo!.Index, _navigationMap));
+            var requested = resolver.FromUiTime(RationalTime.FromTicks(ticks));
+            if (!resolver.TryResolveForward(requested, out var boundary))
+            {
+                LastError = "No verified presentation boundary at or after the requested time; EOF is unverified.";
+                StatusLine = LastError;
+                return;
+            }
+            ticks = resolver.ToUiTime(boundary!.Resolved).ToTicks();
+        }
 
         if (_durationTicks > 0)
             ticks = Math.Clamp(ticks, 0, _durationTicks);
@@ -900,7 +1030,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         => _ffmpeg is not null && _sourcePath is not null && !_mediaJobActive && !_isBusy && !_shutdownRequested;
 
     private bool CanRunSceneJob()
-        => _sceneWorker is not null && _sourcePath is not null && !_mediaJobActive && !_isBusy && !_shutdownRequested;
+        => (_sceneWorker is not null || _sceneOverride is not null) && _sourcePath is not null && !_mediaJobActive && !_isBusy && !_shutdownRequested;
 
     private bool TryBeginMediaJob()
     {
@@ -950,6 +1080,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         await _mediaJobTask;
     }
 
+    public Task WaitForMediaJobIdleAsync() => _mediaJobTask;
+
     public Task<BenchmarkMediaJobResult> RunBenchmarkMediaJobAsync(string kind, double durationSeconds,
         Action<ToolProcessIdentity>? processStarted = null)
     {
@@ -998,7 +1130,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             else if (kind == "scene")
             {
                 SceneJobResult result = await _sceneWorker!.RunAsync(_sourcePath!, 0, durationSeconds, "content", token,
-                    TimeSpan.FromHours(2), Started);
+                    TimeSpan.FromHours(2), Started, CreateSceneRequest());
                 process = result.Process;
                 success = result.Success;
                 error = result.Error;
@@ -1037,7 +1169,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             await Task.Run(_engine.CloseSource);
             _sourcePath = null;
             _mediaInfo = null;
+            _metadataIdentity = null;
             _navigationMap = null;
+            _progressiveInspection = null;
+            _accessPoints = Array.Empty<PacketAccessPointEvidence>();
+            _progressiveKeyframeTicks = Array.Empty<long>();
+            InspectionSummary = "No source opened.";
+            OnPropertyChanged(nameof(ProgressiveInspection));
+            OnPropertyChanged(nameof(InspectionCapabilities));
             _durationTicks = 0;
             _navigationTarget = 0;
             _navigationTargetOwned = false;
@@ -1077,6 +1216,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
+            using var sourceGuard = _probeOverride is null || File.Exists(path)
+                ? new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read) : null;
+            var identity = sourceGuard is not null
+                ? await Task.Run(() => InspectionSourceIdentity.Capture(path), cancellationToken) : null;
             SourceMediaInfo? info;
 
             if (_probeOverride is not null)
@@ -1113,6 +1256,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
 
             _mediaInfo = info;
+            _metadataIdentity = identity;
+            OnPropertyChanged(nameof(InspectionCapabilities));
 
             MediaStreamInfo? video = info.PrimaryVideo;
             SourceSummary = video is null
@@ -1200,11 +1345,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            SceneJobResult result = await _sceneWorker!
-                .RunAsync(_sourcePath!, 0, 3, "content", _mediaJobCancellation!.Token, processStarted: ObserveMediaProcess)
+            _indexCancellation = _mediaJobCancellation;
+            CancelIndexCommand.RaiseCanExecuteChanged();
+            SceneJobRequest request = CreateSceneRequest();
+            SceneJobResult result = await (_sceneOverride is not null
+                ? _sceneOverride(request, _mediaJobCancellation!.Token)
+                : _sceneWorker!
+                .RunAsync(_sourcePath!, 0, 3, "content", _mediaJobCancellation!.Token, processStarted: ObserveMediaProcess,
+                    request: request))
                 .ConfigureAwait(true);
 
             if (result.Process is { } process) ConfirmMediaProcess(process);
+            _mediaJobCancellation!.Token.ThrowIfCancellationRequested();
             AppendLog("SCENE " + result.Describe());
 
             foreach (SceneProposal scene in result.Scenes.Take(10))
@@ -1215,12 +1367,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
 
             StatusLine = result.Success
-                ? $"Scene job ok: {result.Scenes.Count} proposal(s); positions are approximate frame-rate derived."
+                ? $"Scene job ok: {result.Scenes.Count} proposal(s); positions use decoded source PTS. Final presentation end remains unverified."
                 : "Scene job failed: " + (result.Error ?? "unknown");
         }
         catch (OperationCanceledException)
         {
-            AppendLog("SCENE check cancelled (shutdown).");
+            StatusLine = "Scene analysis cancelled.";
+            AppendLog("SCENE analysis cancelled.");
         }
         catch (Exception exception)
         {
@@ -1230,9 +1383,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         finally
         {
+            _indexCancellation = null;
             EndMediaJob();
+            CancelIndexCommand.RaiseCanExecuteChanged();
         }
     }
+
+    private SceneJobRequest CreateSceneRequest() => new(Guid.NewGuid().ToString("N"),
+        _sceneOverride is null ? _metadataIdentity?.IdentityKey ?? throw new InvalidOperationException("Reopen source metadata before analysis.") : _sourcePath!, _openToken,
+        _mediaInfo?.PrimaryVideo?.Index ?? 0, (_mediaInfo?.ContainerStartTicks ?? 0) / (double)TimeSpan.TicksPerSecond);
 
     private void RefreshToolsetText()
     {
@@ -1309,6 +1468,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _refreshDiagnosticsCommand.RaiseCanExecuteChanged();
         BuildKeyframesCommand?.RaiseCanExecuteChanged();
         BuildFrameIndexCommand?.RaiseCanExecuteChanged();
+        InspectNeighborhoodCommand?.RaiseCanExecuteChanged();
     }
 
     private static string FirstLine(string text)

@@ -63,6 +63,8 @@ were retained. GitHub payload files use literal UTF-8 and gh file inputs; no pro
 
 ## Increments
 
+The first M2 inspection increment is implemented under [#25](https://github.com/reteter/vidsc/issues/25): opt-in bounded neighborhoods, distinct traversal/decoded/dependency evidence, rational boundary resolution, AVC/HEVC NAL classes, source-bound jobs and PTS-based scene reports. Synthetic exhaustive-reference/negative-oracle, packaged scene and bounded real HEVC checks pass; see [M2 evidence](validation/2026-10-14-m2-inspection.md). The M2 epic remains open for its acceptance verdict and explicit EOF/dependency limits. Deferred M1 tests were not resumed.
+
 | Increment | State | Acceptance |
 | --- | --- | --- |
 | Dark UI contrast | Verified, `d5d1e29` | Actual WPF tabs, status, inputs and disabled controls readable |
