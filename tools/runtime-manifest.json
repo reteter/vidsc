@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "project": "vidsc",
+  "milestone": "M0 scaffold / runtime bundle",
+  "authoredUtc": "2026-10-14T00:00:00Z",
+  "notes": [
+    "Pinned dependency and runtime identities for the first implementation increment.",
+    "No redistribution licence clearance is claimed here; see 'distribution'.",
+    "This file is the authored pin. tools/Build-Release.ps1 generates runtime-manifest.observed.json next to the published executable with the SHA256 of every bundled file."
+  ],
+
+  "dotnet": {
+    "targetFramework": "net10.0-windows",
+    "sdk": "10.0.201",
+    "desktopRuntime": "Microsoft.WindowsDesktop.App 10.0.5",
+    "distribution": "framework-dependent",
+    "bundlesDotnetRuntime": false
+  },
+
+  "playback": {
+    "sourceBuild": {
+      "kind": "vendored-project-reference",
+      "directory": "third_party/FlyleafLib",
+      "upstreamCommit": "0f061769c47d50dfdae5c667435bf6548a0dc121",
+      "informationalVersion": "3.11.11+vidsc.hook.1",
+      "notes": "Local raw-frame metadata and experimental DXGI present-ID confirmation changes. Original NuGet package identity below records the upstream baseline. Exact editing remains disabled pending acceptance."
+    },
+    "package": {
+      "id": "FlyleafLib",
+      "version": "3.11.11",
+      "nugetFlatContainer": "https://api.nuget.org/v3-flatcontainer/flyleaflib/3.11.11/flyleaflib.3.11.11.nupkg",
+      "repository": "https://github.com/SuRGeoNix/Flyleaf",
+      "commit": "0f061769c47d50dfdae5c667435bf6548a0dc121",
+      "licenseExpression": "LGPL-3.0-or-later"
+    },
+    "transitive": [
+      { "id": "Flyleaf.FFmpeg.Bindings", "version": "9.0.2" },
+      { "id": "Vortice.D3DCompiler", "version": "3.8.3" },
+      { "id": "Vortice.Direct3D11", "version": "3.8.3" },
+      { "id": "Vortice.DirectComposition", "version": "3.8.3" },
+      { "id": "Vortice.Mathematics", "version": "2.1.1" },
+      { "id": "Vortice.MediaFoundation", "version": "3.8.3" },
+      { "id": "Vortice.XAudio2", "version": "3.8.3" }
+    ],
+    "native": {
+      "component": "FFmpeg v9.0 (patched by Flyleaf, Windows x64, playback-only: no encoders)",
+      "releaseUrl": "https://github.com/SuRGeoNix/Flyleaf/releases/download/v3.11.11/Flyleaf_v3.11.11.7z",
+      "sha256": "de50d40ba8f471fbbb005b33deaf9dde172fca44cd123cbe0835b9822dd4a3b1",
+      "archiveEntryRoot": "FFmpeg",
+      "bindingsVersion": "9.0.2",
+      "abiMajors": {
+        "avcodec": 63,
+        "avdevice": 63,
+        "avfilter": 12,
+        "avformat": 63,
+        "avutil": 61,
+        "swresample": 7,
+        "swscale": 10
+      },
+      "libraries": [
+        "avcodec-63.dll",
+        "avdevice-63.dll",
+        "avfilter-12.dll",
+        "avformat-63.dll",
+        "avutil-61.dll",
+        "swresample-7.dll",
+        "swscale-10.dll"
+      ],
+      "why": "FlyleafLib 3.11.11 binds the Flyleaf.FFmpeg.Bindings 9.0.2 / FFmpeg 9 ABI. The libraries must be the ABI set published with the matching Flyleaf release; they must never be replaced by an unrelated FFmpeg build. The separate CLI set is avcodec-62/avformat-62/avutil-60."
+    }
+  },
+
+  "cli": {
+    "sourceDirectory": "C:\\ffmpeg\\bin",
+    "expectedVersionToken": "N-121120-gc74181a04b-20250918",
+    "buildConfiguration": "shared (--enable-shared --disable-static), --enable-gpl --enable-version3, --enable-ffnvcodec, --enable-cuda-llvm",
+    "executables": [
+      "ffmpeg.exe",
+      "ffprobe.exe"
+    ],
+    "sharedLibraries": [
+      "avcodec-62.dll",
+      "avdevice-62.dll",
+      "avfilter-11.dll",
+      "avformat-62.dll",
+      "avutil-60.dll",
+      "swresample-6.dll",
+      "swscale-9.dll"
+    ],
+    "observedSha256": {
+      "ffmpeg.exe": "31ec524adbc9fe4835c9397c9151a3172d34116aada34d7cbaeffa4430089889",
+      "ffprobe.exe": "a40d9989eeb9eefac11d260834243268e4d68fabd3ab920d081392c6a08a5d64",
+      "avcodec-62.dll": "515d253a5ccb2b53f9c685369b797fb645ce06386775cf5beff0e8a1575f0d17",
+      "avdevice-62.dll": "df42b5b00256633a9f9dd190903ad290e134b29d7fae25ceaab344fd45a28c4a",
+      "avfilter-11.dll": "1dfa83931951e26740aa413676ca228a059d12f836d2de2d4bf3f95695496223",
+      "avformat-62.dll": "03c7e464dbf608dd00b668f800d3ee1308cedbdace0596cccc10b43c3724c09e",
+      "avutil-60.dll": "4b9ee2f2023c085eca4395102908d40f714e04a2818b6126cbb07b75dc6c0b4e",
+      "swresample-6.dll": "b534e85c6c1fad80f5014b6c11a704aef1b17a81c4ea217f8e6c4bbf93f8f92f",
+      "swscale-9.dll": "c28c894b3ee6df3eb11a5f4109e307c4fd1c66af8eb1fb90c7690e622ccc52a8"
+    },
+    "why": "The CLI set is a separate, differently versioned FFmpeg build. It is bundled next to the application under tools/ffmpeg and is never used as the playback native set."
+  },
+
+  "scene": {
+    "driver": "tools/scene/vidsc_scene_job.py",
+    "buildScript": "tools/Build-Scene-Runtime.ps1",
+    "relocatable": {
+      "kind": "official Windows embeddable CPython + project-local pip wheel install (no venv, no pyvenv.cfg)",
+      "interpreter": "CPython 3.14.5",
+      "distribution": "python-3.14.5-embed-amd64",
+      "distributionUrl": "https://www.python.org/ftp/python/3.14.5/python-3.14.5-embed-amd64.zip",
+      "distributionSha256": "ba6bd811c4eedb19195cf275770ef127e893d63701e24152606e2cb76f6d876a",
+      "runtimeSource": "artifacts/runtime/scene/python",
+      "manifest": "artifacts/runtime/scene/scene-runtime-manifest-relocatable.json",
+      "pythonExeSha256": "3adbbf2af609e206e3ca18cd55fc7c4b52f5c8bb8218dd99fd5a9e50d7a193cd",
+      "pythonDll": "python314.dll",
+      "pythonDllSha256": "18310593c50ad109fc5c95db1fd5c92ecec9e1bfc66c976df9fc11dd62616d5a",
+      "pyvenvCfgPresent": false,
+      "hostPythonRequired": false,
+      "installed": [
+        { "name": "scenedetect", "version": "0.7.2", "wheel": "scenedetect-0.7.2-py3-none-any.whl", "sha256": "953b89fe7e6b82a497c263e26245ad599b004aa7afa74814312980479a040641" },
+        { "name": "av", "version": "19.0.1", "wheel": "av-19.0.1-cp312-abi3-win_amd64.whl", "sha256": "906fc3db09288319a75ea23ffefb59961c7dbe0d1c074601507a89de7d8593d8", "caveat": "cp312-abi3 stable-ABI wheel used on 3.14" },
+        { "name": "numpy", "version": "2.5.4", "wheel": "numpy-2.5.4-cp314-cp314-win_amd64.whl", "sha256": "2ca144f15135b6212a5c47b1e2aeca6e412f102f95a2d5d88d8aec77eb255de3" },
+        { "name": "opencv-python", "version": "5.0.0.93", "wheel": "opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl", "sha256": "f90ba04b8f73bc5c3814037699739f0156f597338a98f05956c684e7c3ca10d2" },
+        { "name": "click", "version": "8.5.0", "wheel": "click-8.5.0-py3-none-any.whl", "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360" },
+        { "name": "colorama", "version": "0.4.6", "wheel": "colorama-0.4.6-py2.py3-none-any.whl", "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6" },
+        { "name": "platformdirs", "version": "4.13.0", "wheel": "platformdirs-4.13.0-py3-none-any.whl", "sha256": "3dbcf4cd708f21cf876c4eaa90e58412bc4f033d87143f41b1493ff77c25b7e1" },
+        { "name": "tqdm", "version": "4.70.1", "wheel": "tqdm-4.70.1-py3-none-any.whl", "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73" }
+      ]
+    },
+    "legacyFallback": {
+      "kind": "host-Python virtual environment (NOT relocatable)",
+      "venvSource": "artifacts/runtime/scene/venv",
+      "manifest": "artifacts/runtime/scene/scene-runtime-manifest.json",
+      "hostInterpreter": "C:\\Python314\\python.exe",
+      "why": "local-development fallback only: pyvenv.cfg points at the host interpreter, so it must never be described as self-contained. The build marks it as a pending scene sub-gate."
+    },
+    "why": "Scene detection runs in its own project-local runtime as a child process. The preferred bundle is the relocatable embeddable runtime; no development Python path is substituted when the bundle is missing."
+  },
+
+  "distribution": {
+    "decision": "unresolved",
+    "statement": "This increment is a local-development build. Redistribution licence clearance has NOT been decided or claimed for the Flyleaf native FFmpeg build, the CLI FFmpeg build (compiled with --enable-gpl --enable-version3) or the Python/PyAV runtime."
+  }
+}

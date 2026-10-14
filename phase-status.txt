@@ -1,0 +1,49 @@
+# vidsc — implementation status
+
+Date: 14 October 2026. Current work: remaining M1 real-media and visual/manual acceptance.
+
+Read docs/implementation-progress.md for the current workflow, commits and acceptance state.
+M0 and minimal M1 playback are verified. Read-only zoomable timeline, PTS indexing,
+keyboard/wheel navigation and timecode/frame-index entry are implemented and committed.
+Latest unit tests: 241/241 passed. The M1 read-only presentation sub-gate is accepted:
+hook-five-final-visible passes 140/140 visible checks across CFR24, fractional FPS, VFR-offset,
+HEVC Main10 and edit-list fixtures, including before/at/after requests and EOF.
+hook-lifecycle-final-visible passes 19/19 visible checks plus lifecycle actions; earlier exhaustive
+VFR adjacency passes 108/108. Historical failed runs remain preserved.
+See docs/validation/2026-10-14-m1-presentation-acceptance.md.
+Default Release verification passed: source/native manifest, CLI/barcodes, packaged scene windows,
+application smoke and promotion (artifacts/m1-qualified-release-build.log). B6 Test-Delivery is unrun.
+User's short real-HEVC manual trial passed without reported problems. Minimize pauses playback.
+Timeline zoom-scale/scrollbar/whole-clip overview TODO is recorded in docs/implementation-progress.md.
+Remaining host benchmarks are deferred until the user explicitly says they have finished working
+and testing may resume. No UI automation, automatic restart or scheduled run. Laptop testing is
+not planned for this checkpoint; its separate hardware profile would not close host acceptance.
+Standalone extraction/CI preparation is authorized separately: target D:\code\codex\vidsc,
+origin https://github.com/reteter/vidsc.git. User handles Git initialization/remote setup.
+Test-CI passes locally (241 units, four rollback scenarios, Release compile and tracked PS syntax);
+workflow is not yet verified on GitHub. Test-Delivery is versioned; full B6 remains deferred.
+The pinned maintained source hook is Proven for IObservedPresentationSource. Every read checks
+native freshness; normalized start/end require a complete matching source map and a verified end.
+Missing map/end returns null; EOF is unknown unless independently verified. Core stores no second
+native observation. Exact editing remains disabled because interval editing/export are unimplemented.
+Software audio-clock/DXGI/GPU telemetry and real contention/cancellation scenarios are implemented;
+full-duration acceptance remains pending. This session stops after M1 and its retrospective; no M2.
+
+B1/B2 baseline on supplied HEVC D: HDD: metadata-open median 176.75 ms fresh process,
+87.92 ms warm; 100/100 callback-correlated seeks, median 84.04 ms / p95 156.35 ms.
+These are advisory timings, not displayed-frame acceptance. See docs/validation records.
+No push, global setting changes or source media mutation. Full M1 remains OPEN for the plan's
+real-media B1–B6 and bounded visual/manual acceptance. Stop after M1 and its tests/retrospective;
+do not begin M2 in this session.
+
+Historical M0/minimal M1 completion evidence follows (not current test counts):
+
+Result: 120 tests passed; default staged Release build and promotion passed; four promotion rollback tests passed. Fresh spaced Unicode package passed GUI/loaded-native/CLI/scene checks with development Python and FFmpeg removed from PATH. No .NET runtime bundled. Sources and existing CLI outputs retained their hashes. Actual scene windows covered zero and nonzero starts, with and without cuts. Application shutdown completed with an owned scene job active.
+
+Final native changes preserve actual callback milliseconds separately from requested ticks; own and serialize native source opens; prohibit Player reuse after timeout; block seek callbacks during source replacement; discard queued old-source transport; use the pinned scene seek/count API; await owned jobs before dispatcher shutdown; defer nested WPF close; preserve spaced arguments; and disable native autoplay during source inspection.
+
+Evidence: docs/validation/2026-10-14-m0-m1.md section 13, artifacts/native-final-build.log, artifacts/native-delivery-report.json, artifacts/native-delivery.log. Release: artifacts/release/app/Vidsc.App.exe.
+
+At that historical checkpoint, full M1 still lacked presented-frame proof, B1–B6 and visual gates. Current presentation acceptance is recorded above. M2–M8 remain unimplemented. Native timeout was source-reviewed but a deliberately hung native open was not injected. Redistribution licence clearance unresolved.
+
+Historical evidence predates the later local implementation commits.

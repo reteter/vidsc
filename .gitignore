@@ -1,0 +1,35 @@
+# vidsc standalone repository: generated output and local state stay outside version control.
+
+# Build output
+bin/
+obj/
+
+# All generated artifacts, including fresh-location smoke copies and native reports.
+# Source fixture definitions remain under tests/fixtures/.
+/artifacts/
+
+# Local tooling/runtime state and logs (binary or generated)
+*.log
+*.venv/
+venv/
+__pycache__/
+
+# Local tooling state
+*.user
+.vs/
+*.suo
+.vscode/
+.idea/
+.cache/
+logs/
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local credentials/configuration
+.env
+.env.*
+!.env.example
+*.local
