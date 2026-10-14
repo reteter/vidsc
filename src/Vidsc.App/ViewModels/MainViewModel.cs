@@ -1030,7 +1030,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         => _ffmpeg is not null && _sourcePath is not null && !_mediaJobActive && !_isBusy && !_shutdownRequested;
 
     private bool CanRunSceneJob()
-        => (_sceneWorker is not null || _sceneOverride is not null) && _sourcePath is not null && !_mediaJobActive && !_isBusy && !_shutdownRequested;
+        => (_sceneOverride is not null || (_sceneWorker is not null && _metadataIdentity is not null
+            && _mediaInfo?.PrimaryVideo is not null))
+            && _sourcePath is not null && !_mediaJobActive && !_isBusy && !_shutdownRequested;
 
     private bool TryBeginMediaJob()
     {

@@ -135,6 +135,26 @@ public sealed class AccessPointClassifierTests
     }
 
     [Fact]
+    public void PayloadProbeParsesMultipleHexRowsWithDoubleSpacesInsideAscii()
+    {
+        string dump = """
+            00000000: 0000 0022 6541 4220 2043 4445 4647 4849  ..."eAB  CDEFGHI
+            00000010: 4a4b 4c20 204d 4e4f 5051 5253 5420 2055  JKL  MNOPQRST  U
+            00000020: 5657 5859 5a80                           VWXYZ.
+            """;
+        string json = JsonSerializer.Serialize(new
+        {
+            streams = new[] { new { codec_name = "h264", nal_length_size = "4" } },
+            packets = new[] { new { pts = 17, dts = 12, pos = "42", size = "38", data = dump } }
+        });
+        PacketAccessPointEvidence packet = Assert.Single(FfprobeAccessPointReader.Parse(json));
+        Assert.Equal(38, packet.Size);
+        Assert.Equal(17, packet.Pts);
+        Assert.Equal(42, packet.Position);
+        Assert.Equal(AccessPointKind.AvcIdr, packet.Evidence.Kind);
+    }
+
+    [Fact]
     public void IncompletePayloadNeverBecomesCandidate()
     {
         string json = JsonSerializer.Serialize(new

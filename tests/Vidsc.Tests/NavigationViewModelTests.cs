@@ -19,6 +19,50 @@ public sealed class NavigationViewModelTests
 {
     private static NavigationMap Map() => new(Rational.Create(1, 1000), 0, [0, 40, 130], [0, 1000, 2000]);
 
+    [Theory]
+    [InlineData("missing", true, false)]
+    [InlineData("failed", true, false)]
+    [InlineData("no-video", true, false)]
+    [InlineData("valid", false, false)]
+    [InlineData("valid", true, true)]
+    public async Task SceneCommandRequiresMetadataIdentityAndVideo(string probeState, bool sourceExists, bool eligible)
+    {
+        AppPaths paths = NewPaths();
+        string source = Path.Combine(paths.WorkDirectory, "source.bin");
+        if (sourceExists) File.WriteAllBytes(source, [1, 2, 3]);
+        var toolset = ToolsetWithStubCli(paths);
+        Directory.CreateDirectory(toolset.SceneDirectory);
+        File.WriteAllText(Path.Combine(toolset.SceneDirectory, "vidsc_scene_job.py"), "stub");
+        toolset = toolset with { ScenePythonPath = Path.Combine(toolset.SceneDirectory, "python.exe") };
+        var viewModel = new MainViewModel(new FakePlaybackEngine(), toolset, paths,
+            Dispatcher.CurrentDispatcher, (path, _) => probeState switch
+            {
+                "missing" => Task.FromResult<SourceMediaInfo?>(null),
+                "failed" => throw new IOException("Synthetic metadata probe failure."),
+                "no-video" => Task.FromResult<SourceMediaInfo?>(MakeInfo(path) with { Streams = [] }),
+                _ => Task.FromResult<SourceMediaInfo?>(MakeInfo(path))
+            });
+        try
+        {
+            await viewModel.OpenAsync(source);
+            Assert.True(viewModel.IsOpened);
+            Assert.True(viewModel.HasSceneRuntime);
+            Assert.Equal(eligible, viewModel.SceneCheckCommand.CanExecute(null));
+            if (!eligible)
+            {
+                string? previousError = viewModel.LastError;
+                viewModel.SceneCheckCommand.Execute(null);
+                await viewModel.WaitForMediaJobIdleAsync();
+                Assert.Equal(0, viewModel.MediaJobRunCount);
+                Assert.False(viewModel.IsMediaJobActive);
+                Assert.Equal(previousError, viewModel.LastError);
+            }
+            await viewModel.CloseSourceAsync();
+            Assert.False(viewModel.SceneCheckCommand.CanExecute(null));
+        }
+        finally { await viewModel.ShutdownAsync(); }
+    }
+
     [Fact]
     public async Task SourceMutationAfterMetadataRejectsInspectionBeforeReadingWithStaleTiming()
     {
