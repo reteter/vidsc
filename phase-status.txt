@@ -15,7 +15,9 @@ Default Release verification passed: source/native manifest, CLI/barcodes, packa
 application smoke and promotion (artifacts/m1-qualified-release-build.log). B6 Test-Delivery is unrun.
 User's short real-HEVC manual trial passed without reported problems. Minimize pauses playback.
 Timeline zoom-scale/scrollbar/whole-clip overview TODO is recorded in docs/implementation-progress.md.
-Long visible-window benchmarks are on hold until a time is agreed with the user; no UI automation now.
+Remaining host benchmarks are deferred until the user explicitly says they have finished working
+and testing may resume. No UI automation, automatic restart or scheduled run. Laptop testing is
+not planned for this checkpoint; its separate hardware profile would not close host acceptance.
 The pinned maintained source hook is Proven for IObservedPresentationSource. Every read checks
 native freshness; normalized start/end require a complete matching source map and a verified end.
 Missing map/end returns null; EOF is unknown unless independently verified. Core stores no second

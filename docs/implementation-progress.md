@@ -14,8 +14,11 @@ scene windows, application smoke and promotion (`artifacts/m1-qualified-release-
 The B6 `Test-Delivery` scenario has not been run; the Release pipeline does not close it.
 The user completed the supplied HEVC clip's manual playback/audio, timeline/frame-step,
 minimize/restore and readability trial without problems. Playback pauses while minimized.
-Long visible-window benchmarks are on hold until a suitable time is agreed with the user;
-do not activate test windows or start those runs before that coordination is complete.
+At the user's request, remaining visible-window benchmarks are deferred on this host until the
+user explicitly says they have finished working and testing may resume. Do not activate test
+windows or start those runs in the meantime. No schedule or automatic restart is configured.
+Laptop testing was considered and declined for this checkpoint: it would provide a separate
+hardware profile rather than close this host's acceptance. Full M1 remains open; do not start M2.
 
 ## Current workflow
 
@@ -80,9 +83,9 @@ timeline design increment, without expanding the remaining M1 acceptance scope:
 
 ## Session continuation
 
-The user's stop request was revoked by the subsequent resume message. Continue orchestration;
-the latest instruction narrows this session to completing M1 and its tests, then stopping for a
-retrospective and plan review. Do not start M2 in this session. Keep `opencode-delegate` unused.
+Earlier stop/resume messages were superseded by the latest deferral above. Wait for the user's
+explicit signal before remaining host benchmarks. The scope remains M1 and its tests, followed
+by a retrospective and plan review; do not start M2. Keep `opencode-delegate` unused.
 
 The maintained production source integration is committed under `third_party/FlyleafLib`, with
 informational identity `3.11.11+vidsc.hook.1`. The older isolated experiment remains under ignored
