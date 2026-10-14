@@ -58,6 +58,15 @@ configuration. This adds no native playback or real-media acceptance. See [CI po
 `tools/Test-Delivery.ps1` is included in version control as the manual B6 runner. Syntax and its
 pre-launch setup-failure report path were checked; full B6 remains unrun and deferred.
 
+## M3 draft range planning — 15 October 2026
+
+The #32 foundation adds exact expand/contract/nearest selection of whole supplied
+ranges, preserving source/configuration/packet-manifest binding and both numeric
+and copy-snapping deltas. It creates proposals only; media qualification and export
+eligibility remain required. Local CI passes 348 cases and all existing build/rollback
+checks; focused review verified deterministic tie-breaking and distinct delta stages.
+See [planner evidence](validation/2026-10-15-m3-planner.md). No M1 or #28 work was resumed.
+
 ## Current workflow
 
 Operational rules live in [AGENTS.md](../AGENTS.md) and [the workflow](github-workflow.md).
