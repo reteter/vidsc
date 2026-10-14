@@ -482,7 +482,8 @@ public sealed class FlyleafPlaybackEngine : IPlaybackEngine
                 return;
 
             _lastReportedAdvisoryTicks = ticks;
-            _positions.ReportAdvisoryPosition(RationalTime.FromTicks(ticks), _positions.Generation);
+            if (_positions.ReportAdvisoryPosition(RationalTime.FromTicks(ticks), _positions.Generation))
+                RaiseStateChanged();
         }
         catch (Exception)
         {

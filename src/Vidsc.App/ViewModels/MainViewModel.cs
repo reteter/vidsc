@@ -3,6 +3,7 @@ using System.Windows.Threading;
 
 using Vidsc.App.Services;
 
+using Vidsc.Core.Navigation;
 using Vidsc.Core.Playback;
 using Vidsc.Core.Time;
 using Vidsc.Media.Inspection;
@@ -44,6 +45,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly FfmpegCli? _ffmpeg;
     private readonly SceneWorker? _sceneWorker;
     private readonly Func<string, CancellationToken, Task<SourceMediaInfo?>>? _probeOverride;
+    private readonly Func<string, MediaStreamInfo, long, bool, CancellationToken, Task<NavigationMap>>? _navigationOverride;
     private readonly RelayCommand _openCommand;
     private readonly RelayCommand _playPauseCommand;
     private readonly RelayCommand _stepForwardCommand;
@@ -65,12 +67,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _openCancellation;
     private long _openToken;
     private SourceMediaInfo? _mediaInfo;
+    private NavigationMap? _navigationMap;
+    private CancellationTokenSource? _indexCancellation;
+    private NavigationTimeMode _timeMode;
+    private long _navigationTarget;
+    private bool _navigationTargetOwned;
+    private long _navigationSeekVersion;
+    private long _navigationDispatchedVersion;
+    private long _navigationRequestWatermark;
+    private string _navigationReason = "Frame index unavailable. Build frame index explicitly (whole-file scan).";
     private long _durationTicks;
     private bool _isBusy;
     private bool _isOpened;
     private bool _isPlaying;
     private bool _isMuted;
     private bool _mediaJobActive;
+    private bool _mediaJobStuck;
     private int _mediaJobRunCount;
     private bool _shutdownRequested;
     private int _volume = 80;
@@ -100,13 +112,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         MediaToolset toolset,
         AppPaths paths,
         Dispatcher dispatcher,
-        Func<string, CancellationToken, Task<SourceMediaInfo?>>? probeOverride = null)
+        Func<string, CancellationToken, Task<SourceMediaInfo?>>? probeOverride = null,
+        Func<string, MediaStreamInfo, long, bool, CancellationToken, Task<NavigationMap>>? navigationOverride = null)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _toolset = toolset ?? throw new ArgumentNullException(nameof(toolset));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         _probeOverride = probeOverride;
+        _navigationOverride = navigationOverride;
 
         if (toolset.HasFfmpegCli)
             _ffmpeg = new FfmpegCli(toolset.FfmpegPath!, toolset.FfprobePath!);
@@ -128,9 +142,75 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _sceneCheckCommand = new RelayCommand(() => _mediaJobTask = RunSceneCheckAsync(), CanRunSceneJob);
         _refreshDiagnosticsCommand = new RelayCommand(RefreshDiagnostics, () => !_shutdownRequested);
 
+        BuildKeyframesCommand = new RelayCommand(() => _mediaJobTask = BuildNavigationAsync(false), CanBuildNavigation);
+        BuildFrameIndexCommand = new RelayCommand(() => _mediaJobTask = BuildNavigationAsync(true), CanBuildNavigation);
+        CancelIndexCommand = new RelayCommand(() => _indexCancellation?.Cancel(), () => _indexCancellation is not null);
         RefreshToolsetText();
         RefreshManifestText();
         RefreshDiagnostics();
+    }
+
+    public RelayCommand BuildKeyframesCommand { get; }
+    public RelayCommand BuildFrameIndexCommand { get; }
+    public RelayCommand CancelIndexCommand { get; }
+    public IReadOnlyList<long> KeyframeTicks => _navigationMap?.KeyframeTicks ?? Array.Empty<long>();
+    public NavigationTimeMode[] TimeModes { get; } = Enum.GetValues<NavigationTimeMode>();
+    public NavigationTimeMode TimeMode
+    {
+        get => _timeMode;
+        set { if (SetProperty(ref _timeMode, value)) ReformatDesiredTime(); }
+    }
+    public string NavigationReason { get => _navigationReason; private set => SetProperty(ref _navigationReason, value); }
+    private int NominalFps => _mediaInfo?.PrimaryVideo?.RealFrameRate is { } rate && rate.IsPositive
+        ? (int)Math.Clamp(Math.Round(rate.ToDouble()), 1, 1000) : 0;
+    public string TimeModeHint => $"Nominal FPS: {NominalFps}; timecode is nominal for VFR. Frame index is zero-based file order; displayed video remains advisory.";
+
+    public void NavigateKeyframe(bool next)
+    {
+        if (!IsOpened || IsBusy || _shutdownRequested) return;
+        if (NavigationEntry.Adjacent(KeyframeTicks, _navigationTarget, next) is not { } ticks)
+        { StatusLine = KeyframeTicks.Count == 0 ? "Build keyframes first (explicit scan)." : "No further keyframe candidate."; return; }
+        SetDesiredTicks(ticks, true);
+        SeekExact(_navigationTarget);
+        StatusLine = "Keyframe candidate seek; candidates are not safe cuts.";
+    }
+
+    private bool CanBuildNavigation() => CanRunMediaJob() && _mediaInfo?.PrimaryVideo is not null;
+
+    private async Task BuildNavigationAsync(bool includeFrames)
+    {
+        if (!CanBuildNavigation() || !TryBeginMediaJob()) return;
+        long generation = _openToken;
+        string path = _sourcePath!;
+        SourceMediaInfo info = _mediaInfo!;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _indexCancellation = cancellation;
+        CancelIndexCommand.RaiseCanExecuteChanged();
+        NavigationReason = includeFrames ? "Building full frame index (whole-file scan)…" : "Building keyframe candidates (explicit scan)…";
+        try
+        {
+            var reader = new FfprobeNavigationReader(_toolset.FfprobePath!);
+            NavigationMap map = await (_navigationOverride is null
+                ? reader.ReadAsync(path, info.PrimaryVideo!, info.ContainerStartTicks ?? 0, includeFrames, cancellation.Token)
+                : _navigationOverride(path, info.PrimaryVideo!, info.ContainerStartTicks ?? 0, includeFrames, cancellation.Token));
+            if (generation != _openToken || cancellation.IsCancellationRequested) return;
+            if (!includeFrames && _navigationMap?.HasFrameIndex == true)
+                map = new NavigationMap(map.TimeBase, map.TimelineOriginTicks, _navigationMap.FramePts, map.KeyframePts);
+            _navigationMap = map;
+            NavigationReason = map.HasFrameIndex
+                ? $"{map.FrameCount:N0} file frames; {map.KeyframeTicks.Count:N0} keyframe candidates (not safe cuts)."
+                : (map.FrameIndexUnavailableReason ?? "Frame index not built; choose Build frame index.") + $" {map.KeyframeTicks.Count:N0} keyframe candidates (not safe cuts).";
+            OnPropertyChanged(nameof(KeyframeTicks));
+            ReformatDesiredTime();
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            _mediaJobStuck = true;
+            NavigationReason = $"Indexer process {exception.ProcessId} has not exited. Media jobs remain blocked; close the app and inspect that process.";
+        }
+        catch (OperationCanceledException) { if (generation == _openToken) NavigationReason = "Index scan cancelled; build again when needed."; }
+        catch (Exception exception) { if (generation == _openToken) NavigationReason = "Index scan failed: " + exception.Message; }
+        finally { _indexCancellation = null; IsMediaJobActive = _mediaJobStuck; CancelIndexCommand.RaiseCanExecuteChanged(); }
     }
 
     public ObservableCollection<string> LogLines { get; } = new();
@@ -240,7 +320,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string DesiredTimeText
     {
-        get => _isScrubbing ? TimeText.Format((long)_desiredSliderTicks) : _desiredTimeText;
+        get => _isScrubbing ? NavigationEntry.Format((long)_desiredSliderTicks, TimeMode, NominalFps, _navigationMap) : _desiredTimeText;
         set => SetProperty(ref _desiredTimeText, value);
     }
 
@@ -334,6 +414,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         previous?.Dispose();
 
         IsBusy = true;
+        _indexCancellation?.Cancel();
+        await _mediaJobTask.ConfigureAwait(true);
+        if (token != _openToken) return;
+        if (_shutdownRequested || cancellation.IsCancellationRequested)
+        {
+            IsBusy = false;
+            return;
+        }
+        _sourcePath = null;
+        _mediaInfo = null;
+        _navigationMap = null;
+        _durationTicks = 0;
+        _navigationTarget = 0;
+        _navigationTargetOwned = false;
+        SourceSummary = "No source metadata.";
+        if (!_mediaJobStuck) NavigationReason = "Frame index unavailable. Build frame index explicitly (whole-file scan).";
+        OnPropertyChanged(nameof(KeyframeTicks));
+        OnPropertyChanged(nameof(SourceFactsText));
+        OnPropertyChanged(nameof(SliderMaximumTicks));
         IsOpened = false;
         LastError = null;
         StatusLine = $"Opening {Path.GetFileName(path)} ...";
@@ -373,7 +472,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
 
             _sourcePath = path;
-            SetDesiredTicks(0, moveSlider: true);
+            SetDesiredTicks(0, moveSlider: true, ownTarget: false);
 
             StatusLine = "Ready.";
             AppendLog("OPEN OK duration=" + TimeText.Format(result.DurationTicks));
@@ -416,8 +515,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _ = OpenAsync(path);
     }
 
-    public void StepForward() => EnqueueTransport("STEP forward", _engine.StepForward);
-    public void StepBackward() => EnqueueTransport("STEP backward", _engine.StepBackward);
+    public void StepForward() { _navigationTargetOwned = false; EnqueueTransport("STEP forward", _engine.StepForward); }
+    public void StepBackward() { _navigationTargetOwned = false; EnqueueTransport("STEP backward", _engine.StepBackward); }
 
     public void Play() => EnqueueTransport("PLAY", _engine.Play);
 
@@ -425,9 +524,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void PlayPause() => EnqueueTransport("PLAY/PAUSE", _engine.TogglePlayPause);
 
-    public void SeekApproximate(long ticks) => EnqueueTransport("SEEK approximate", () => _engine.SeekApproximate(TimeSpan.FromTicks(ticks)));
+    public void SeekApproximate(long ticks) => QueueNavigationSeek(ticks, false);
 
-    public void SeekExact(long ticks) => EnqueueTransport("SEEK exact", () => _engine.SeekExact(TimeSpan.FromTicks(ticks)));
+    public void SeekExact(long ticks) => QueueNavigationSeek(ticks, true);
+
+    private void QueueNavigationSeek(long ticks, bool accurate)
+    {
+        SetDesiredTicks(ticks, true);
+        long version = Interlocked.Increment(ref _navigationSeekVersion);
+        _navigationRequestWatermark = _engine.Positions.Snapshot().LastRequest?.Id.Value ?? 0;
+        EnqueueTransport(accurate ? "SEEK exact" : "SEEK approximate", () =>
+        {
+            if (accurate) _engine.SeekExact(TimeSpan.FromTicks(ticks));
+            else _engine.SeekApproximate(TimeSpan.FromTicks(ticks));
+            Interlocked.Exchange(ref _navigationDispatchedVersion, version);
+        });
+    }
 
     public void ToggleMute()
     {
@@ -490,9 +602,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     /// <summary>Applies the typed time entry as an exact seek.</summary>
     public void CommitDesiredExact()
     {
-        if (!TimeText.TryParseTicks(_desiredTimeText, out long ticks))
+        if (!NavigationEntry.TryParse(_desiredTimeText, TimeMode, NominalFps, _navigationMap, out long ticks))
         {
-            LastError = $"'{_desiredTimeText}' is not a valid time. Use HH:MM:SS.mmm, MM:SS.mmm or seconds.";
+            LastError = TimeMode == NavigationTimeMode.FrameIndex ? "Frame index unavailable or outside the full file index range. Build frame index first." : "Invalid position for the selected mode. Use HH:MM:SS.mmm or nominal HH:MM:SS:FF.";
             StatusLine = LastError;
             return;
         }
@@ -535,8 +647,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         ExactEditingText = snapshot.ExactBoundariesEligible ? "eligible" : "disabled";
 
-        if (!_isScrubbing && snapshot.AdvisoryReported is { } advisory)
-            SetDesiredTicks(advisory.ToTicks(), moveSlider: true);
+        // Release only after the latest queued intent reached transport and its correlated request
+        // completed. A completion echo remains advisory; paused repeated jumps keep their target.
+        if (_navigationTargetOwned && !_isScrubbing && _engine.Status == PlaybackEngineStatus.Playing
+            && Interlocked.Read(ref _navigationDispatchedVersion) == Interlocked.Read(ref _navigationSeekVersion)
+            && snapshot.PendingRequestId is null
+            && snapshot.LastRequest is { } request && snapshot.LastCompletion is { Success: true } completion
+            && request.Generation == snapshot.Generation && completion.Generation == snapshot.Generation
+            && completion.Id == request.Id && request.Id.Value > _navigationRequestWatermark
+            && request.Requested.ToTicks() == _navigationTarget)
+            _navigationTargetOwned = false;
+
+        if (!_isScrubbing && !_navigationTargetOwned && snapshot.PendingRequestId is null && snapshot.AdvisoryReported is { } advisory)
+        {
+            SetDesiredTicks(advisory.ToTicks(), moveSlider: true, ownTarget: false);
+            _navigationTargetOwned = false;
+        }
 
         IsPlaying = _engine.Status == PlaybackEngineStatus.Playing;
     }
@@ -661,6 +787,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         _openCancellation?.Cancel();
+        _indexCancellation?.Cancel();
 
         // Cancellation requests termination; awaiting the job confirms its owned child has exited.
         await _mediaJobTask.ConfigureAwait(false);
@@ -832,6 +959,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                   + $"rRate={video.RealFrameRate} tb={video.TimeBase}";
 
             OnPropertyChanged(nameof(SourceFactsText));
+            OnPropertyChanged(nameof(TimeModeHint));
             AppendLog("PROBE " + SourceSummary);
         }
         catch (OperationCanceledException)
@@ -964,13 +1092,21 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             $"hashed files   : {manifest.Files.Count}");
     }
 
-    private void SetDesiredTicks(long ticks, bool moveSlider)
+    private void ReformatDesiredTime()
+    {
+        _desiredTimeText = NavigationEntry.Format((long)_desiredSliderTicks, TimeMode, NominalFps, _navigationMap);
+        OnPropertyChanged(nameof(DesiredTimeText));
+    }
+
+    private void SetDesiredTicks(long ticks, bool moveSlider, bool ownTarget = true)
     {
         if (_durationTicks > 0)
             ticks = Math.Clamp(ticks, 0, _durationTicks);
 
         _engine.Positions.SetDesired(RationalTime.FromTicks(ticks));
-        _desiredTimeText = TimeText.Format(ticks);
+        _navigationTarget = ticks;
+        _navigationTargetOwned = ownTarget;
+        _desiredTimeText = NavigationEntry.Format(ticks, TimeMode, NominalFps, _navigationMap);
 
         if (moveSlider)
             DesiredSliderTicks = ticks;
@@ -1003,6 +1139,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _toolCheckCommand.RaiseCanExecuteChanged();
         _sceneCheckCommand.RaiseCanExecuteChanged();
         _refreshDiagnosticsCommand.RaiseCanExecuteChanged();
+        BuildKeyframesCommand?.RaiseCanExecuteChanged();
+        BuildFrameIndexCommand?.RaiseCanExecuteChanged();
     }
 
     private static string FirstLine(string text)

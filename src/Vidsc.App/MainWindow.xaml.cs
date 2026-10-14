@@ -15,7 +15,8 @@ public partial class MainWindow : Window
     private readonly Player? _player;
     private bool _shutdownStarted;
     private bool _shutdownComplete;
-    private bool _isSliderDragging;
+    private Window? _navigationSurface;
+
 
     public MainWindow(MainViewModel viewModel, Player? player)
     {
@@ -33,11 +34,37 @@ public partial class MainWindow : Window
         // generation/invalidation path as the file picker. The host's built-in open-on-drop is
         // disabled on purpose (it would bypass source-generation handling).
         Host.OnSurfaceDrop += OnSurfaceDrop;
+        // The pinned host exposes its separately focused WPF surface as a public Window.
+        // Preview handlers own only our four navigation keys and unmodified wheel events;
+        // handling them before Flyleaf's bubbling bindings prevents conflicting actions.
+        Host.SurfaceCreated += OnNavigationSurfaceCreated;
+        AttachNavigationSurface();
 
-        PositionSlider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler(OnSliderDragStarted));
-        PositionSlider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler(OnSliderDragCompleted));
+        Timeline.ScrubStarted += _viewModel.BeginScrub;
+        Timeline.ScrubMoved += _viewModel.ScrubTo;
+        Timeline.ScrubEnded += _viewModel.EndScrub;
 
         _viewModel.AppendLog("MainWindow ready. Open a source, or drop a file onto the video surface.");
+    }
+
+    private void OnNavigationSurfaceCreated(object? sender, EventArgs e) => AttachNavigationSurface();
+
+    private void AttachNavigationSurface()
+    {
+        if (ReferenceEquals(_navigationSurface, Host.Surface)) return;
+        DetachNavigationSurface();
+        _navigationSurface = Host.Surface;
+        if (_navigationSurface is null) return;
+        _navigationSurface.PreviewKeyDown += OnNavigationKeyDown;
+        _navigationSurface.PreviewMouseWheel += OnNavigationWheel;
+    }
+
+    private void DetachNavigationSurface()
+    {
+        if (_navigationSurface is null) return;
+        _navigationSurface.PreviewKeyDown -= OnNavigationKeyDown;
+        _navigationSurface.PreviewMouseWheel -= OnNavigationWheel;
+        _navigationSurface = null;
     }
 
     /// <summary>Waits until the Flyleaf host has created its D3D surface (needed before playback).</summary>
@@ -90,22 +117,43 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    private void OnSliderDragStarted(object sender, DragStartedEventArgs e)
+    private void OnZoomOut(object sender, RoutedEventArgs e) => Timeline.Zoom(2);
+    private void OnZoomIn(object sender, RoutedEventArgs e) => Timeline.Zoom(.5);
+    private void OnTimelineFit(object sender, RoutedEventArgs e) => Timeline.Fit();
+    private void OnTimelineCenter(object sender, RoutedEventArgs e) => Timeline.Center();
+
+    private static bool IsEditingControl(object? source)
     {
-        _isSliderDragging = true;
-        _viewModel.BeginScrub();
+        DependencyObject? element = source as DependencyObject;
+        while (element is not null)
+        {
+            if (element is TextBoxBase or ComboBox or Slider) return true;
+            element = element is System.Windows.Media.Visual || element is System.Windows.Media.Media3D.Visual3D
+                ? System.Windows.Media.VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element);
+        }
+        return false;
     }
 
-    private void OnSliderDragCompleted(object sender, DragCompletedEventArgs e)
+    private void OnNavigationKeyDown(object sender, KeyEventArgs e)
     {
-        _isSliderDragging = false;
-        _viewModel.EndScrub(PositionSlider.Value);
+        if (e.Handled || _shutdownStarted || IsEditingControl(e.OriginalSource) || Keyboard.Modifiers != ModifierKeys.None) return;
+        switch (e.Key)
+        {
+            case Key.Up: _viewModel.NavigateKeyframe(true); break;
+            case Key.Down: _viewModel.NavigateKeyframe(false); break;
+            case Key.Left: _viewModel.StepBackward(); break;
+            case Key.Right: _viewModel.StepForward(); break;
+            default: return;
+        }
+        e.Handled = true;
     }
 
-    private void OnPositionSliderValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void OnNavigationWheel(object sender, MouseWheelEventArgs e)
     {
-        if (_isSliderDragging)
-            _viewModel.ScrubTo(e.NewValue);
+        if (e.Handled || _shutdownStarted || IsEditingControl(e.OriginalSource) || Keyboard.Modifiers != ModifierKeys.None) return;
+        if (e.Delta == 0) return;
+        _viewModel.NavigateKeyframe(e.Delta > 0);
+        e.Handled = true;
     }
 
     private void OnWindowDragOver(object sender, DragEventArgs e)
@@ -163,6 +211,8 @@ public partial class MainWindow : Window
         try
         {
             Host.OnSurfaceDrop -= OnSurfaceDrop;
+            Host.SurfaceCreated -= OnNavigationSurfaceCreated;
+            DetachNavigationSurface();
         }
         catch (Exception)
         {
