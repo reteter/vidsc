@@ -11,6 +11,8 @@ public sealed class NavigationProcessStuckException(int processId, Exception inn
     : IOException($"ffprobe process {processId} did not confirm termination within 5 seconds. Keep the media job slot reserved until the process is stopped.", innerException)
 {
     public int ProcessId { get; } = processId;
+    /// <summary>Shared admission identity when an adapter retains process protection.</summary>
+    public Guid? RetainedJobId { get; init; }
 }
 
 /// <summary>Bounded streaming probe, independent of the diagnostic stdout capture runner.</summary>

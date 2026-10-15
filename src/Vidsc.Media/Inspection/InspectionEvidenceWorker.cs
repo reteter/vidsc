@@ -42,6 +42,8 @@ public sealed class IndependentReconstructionEvidence
 public sealed class InspectionEvidenceWorker(string pythonPath, string driverPath)
 {
     private const int MaxReport = 2 * 1024 * 1024;
+    public bool TryReconcileStuckJob(Guid jobId) => Export.CopyJobAdmission.TryReconcile(jobId);
+
     public static bool TryCreate(MediaToolset tools, out InspectionEvidenceWorker? worker, out string? reason)
     {
         string driver = Path.Combine(tools.SceneDirectory, "vidsc_inspection_job.py");
@@ -54,32 +56,66 @@ public sealed class InspectionEvidenceWorker(string pythonPath, string driverPat
     public async Task<InspectionEvidenceResult> RunAsync(string path, InspectionEvidenceRequest request,
         CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
-        using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        using var driver = new FileStream(driverPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        if (source.Length is <= 0 or > 16 * 1024 * 1024)
-            return new(false, "Source exceeds the bounded inspection size.");
-        if (InspectionSourceIdentity.Capture(path).IdentityKey != request.Source.SourceId)
-            return new(false, "Source identity changed before inspection.");
-        string sourceHash = Convert.ToHexString(SHA256.HashData(source));
-        string driverHash = Convert.ToHexString(SHA256.HashData(driver));
-        List<string> args = [driverPath, "--input", Path.GetFullPath(path), "--job-id", request.JobId,
-            "--source-id", request.Source.SourceId, "--generation", request.Source.Generation.ToString(CultureInfo.InvariantCulture),
-            "--stream", request.Source.StreamIndex.ToString(CultureInfo.InvariantCulture)];
-        if (request.CandidatePts is { } pts)
-            args.AddRange(["--candidate-pts", pts.ToString(CultureInfo.InvariantCulture)]);
-        else
-            args.AddRange(["--candidate-packet", request.CandidatePacket.ToString(CultureInfo.InvariantCulture)]);
-        var process = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(35),
-            cancellationToken, processStarted, MaxReport).ConfigureAwait(false);
-        if (process.Started && !process.ExitConfirmed)
-            throw new NavigationProcessStuckException(process.ProcessId ?? -1, new IOException("Inspection exit was not confirmed."));
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!process.Succeeded) return new(false, "Inspection process failed or exceeded its budget.", Process: process);
-        source.Position = 0;
-        if (InspectionSourceIdentity.Capture(path).IdentityKey != request.Source.SourceId ||
-            Convert.ToHexString(SHA256.HashData(source)) != sourceHash)
-            return new(false, "Source identity changed during inspection.", Process: process);
-        return Parse(process.StandardOutput, request, sourceHash, driverHash, process);
+        using var lease = await Export.CopyJobAdmission.EnterAsync(Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
+        var guards = new List<FileStream>();
+        bool retained = false;
+        ToolProcessIdentity? active = null;
+        void Started(ToolProcessIdentity identity) { active = identity; processStarted?.Invoke(identity); }
+        FileStream Open(string filePath)
+        {
+            var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            guards.Add(stream);
+            return stream;
+        }
+        try
+        {
+            var source = Open(path);
+            if (source.Length is <= 0 or > 16 * 1024 * 1024)
+                return new(false, "Source exceeds the bounded inspection size.");
+            if (InspectionSourceIdentity.Capture(path).IdentityKey != request.Source.SourceId)
+                return new(false, "Source identity changed before inspection.");
+            var driver = Open(driverPath);
+            Open(pythonPath);
+            string nativeDirectory = Path.Combine(Path.GetDirectoryName(pythonPath)!, "Lib", "site-packages", "av.libs");
+            string[] nativeFiles = Directory.GetFiles(nativeDirectory, "*.dll");
+            if (nativeFiles.Length == 0)
+                return new(false, "Missing native inspection runtime.");
+            foreach (string nativeFile in nativeFiles) Open(nativeFile);
+            string sourceHash = Convert.ToHexString(SHA256.HashData(source));
+            string driverHash = Convert.ToHexString(SHA256.HashData(driver));
+            List<string> args = [driverPath, "--input", Path.GetFullPath(path), "--job-id", request.JobId,
+                "--source-id", request.Source.SourceId, "--generation", request.Source.Generation.ToString(CultureInfo.InvariantCulture),
+                "--stream", request.Source.StreamIndex.ToString(CultureInfo.InvariantCulture)];
+            if (request.CandidatePts is { } pts)
+                args.AddRange(["--candidate-pts", pts.ToString(CultureInfo.InvariantCulture)]);
+            else
+                args.AddRange(["--candidate-packet", request.CandidatePacket.ToString(CultureInfo.InvariantCulture)]);
+            var process = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(35),
+                cancellationToken, Started, MaxReport).ConfigureAwait(false);
+            if (process.Started && !process.ExitConfirmed)
+            {
+                // Keep both admission and file protection until the exact child has exited.
+                retained = true;
+                lease.Retain(active, process.ProcessId ?? -1, () =>
+                {
+                    foreach (var guard in guards) guard.Dispose();
+                });
+                throw new NavigationProcessStuckException(process.ProcessId ?? -1, new IOException("Inspection exit was not confirmed."))
+                { RetainedJobId = lease.JobId };
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!process.Succeeded) return new(false, "Inspection process failed or exceeded its budget.", Process: process);
+            source.Position = 0;
+            if (InspectionSourceIdentity.Capture(path).IdentityKey != request.Source.SourceId ||
+                Convert.ToHexString(SHA256.HashData(source)) != sourceHash)
+                return new(false, "Source identity changed during inspection.", Process: process);
+            return Parse(process.StandardOutput, request, sourceHash, driverHash, process);
+        }
+        finally
+        {
+            if (!retained)
+                foreach (var guard in guards) guard.Dispose();
+        }
     }
 
     public static InspectionEvidenceResult Parse(string json, InspectionEvidenceRequest request,

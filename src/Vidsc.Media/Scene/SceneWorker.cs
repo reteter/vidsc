@@ -39,6 +39,7 @@ public sealed record SceneJobResult(
 {
     public JsonElement? Metadata { get; init; }
     public string? CacheIdentity { get; init; }
+    public Guid? RetainedJobId { get; init; }
     public string Describe()
     {
         if (Process is { Started: false })
@@ -109,69 +110,112 @@ public sealed class SceneWorker
         SceneJobRequest? request = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
-        using var sourceGuard = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
-        InspectionSourceIdentity sourceIdentity = InspectionSourceIdentity.Capture(source);
-        request ??= new SceneJobRequest(Guid.NewGuid().ToString("N"), sourceIdentity.IdentityKey);
-        if (request.SourceIdentity != sourceIdentity.IdentityKey)
-            return new SceneJobResult(false, "Source identity is stale.", source, null, null, null, null, null, [], null, null);
-        if (!double.IsFinite(startSeconds) || startSeconds < 0 || !double.IsFinite(durationSeconds) || durationSeconds < 0
-            || !double.IsFinite(request.SourceOriginSeconds) || !double.IsFinite(request.Threshold)
-            || request.MinSceneLenFrames < 1 || request.StreamIndex < 0 || detector is not ("content" or "adaptive"))
-            throw new ArgumentException("Invalid scene request.");
-
-        string reportPath = Path.Combine(
-            Path.GetTempPath(),
-            "vidsc-scene",
-            Path.GetFileNameWithoutExtension(source) + "-" + Guid.NewGuid().ToString("N")[..8] + ".scene.json");
-
-        Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
-
-        string[] arguments =
-        [
-            _driverPath,
-            "--input", source,
-            "--output", reportPath,
-            "--detector", detector,
-            "--job-id", request.JobId, "--source-id", request.SourceIdentity,
-            "--generation", request.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "--stream", request.StreamIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "--origin", Number(request.SourceOriginSeconds), "--threshold", Number(request.Threshold),
-            "--min-scene-len", request.MinSceneLenFrames.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            "--start", Number(startSeconds), "--duration", Number(durationSeconds),
-        ];
-
-        ToolRunResult run = await ToolProcessRunner
-            .RunAsync(_pythonPath, arguments, timeout ?? DefaultTimeout, cancellationToken, processStarted)
-            .ConfigureAwait(false);
-
-        if (run.Started && !run.ExitConfirmed)
-            return new SceneJobResult(false, "Owned scene process exit is unconfirmed.", source, null, null, null, null, null, Array.Empty<SceneProposal>(), run, null);
-
-        string? json = null;
-        if (File.Exists(reportPath))
+        using var lease = await Export.CopyJobAdmission.EnterAsync(Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
+        var guards = new List<FileStream>();
+        bool retained = false;
+        ToolProcessIdentity? activeProcess = null;
+        FileStream Open(string path)
         {
-            if (new FileInfo(reportPath).Length > 4 * 1024 * 1024)
+            var guard = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            guards.Add(guard);
+            return guard;
+        }
+        void Started(ToolProcessIdentity identity)
+        {
+            activeProcess = identity;
+            processStarted?.Invoke(identity);
+        }
+        try
+        {
+            _ = Open(source);
+            InspectionSourceIdentity sourceIdentity = InspectionSourceIdentity.Capture(source);
+            request ??= new SceneJobRequest(Guid.NewGuid().ToString("N"), sourceIdentity.IdentityKey);
+            if (request.SourceIdentity != sourceIdentity.IdentityKey)
+                return new SceneJobResult(false, "Source identity is stale.", source, null, null, null, null, null, [], null, null);
+            if (!double.IsFinite(startSeconds) || startSeconds < 0 || !double.IsFinite(durationSeconds) || durationSeconds < 0
+                || !double.IsFinite(request.SourceOriginSeconds) || !double.IsFinite(request.Threshold)
+                || request.MinSceneLenFrames < 1 || request.StreamIndex < 0 || detector is not ("content" or "adaptive"))
+                throw new ArgumentException("Invalid scene request.");
+
+            string reportPath = Path.Combine(
+                Path.GetTempPath(),
+                "vidsc-scene",
+                Guid.NewGuid().ToString("N") + ".scene.json");
+
+            _ = Open(_driverPath);
+            _ = Open(_pythonPath);
+            string nativeDirectory = Path.Combine(Path.GetDirectoryName(_pythonPath)!, "Lib", "site-packages", "av.libs");
+            string[] nativeFiles = Directory.GetFiles(nativeDirectory, "*.dll");
+            if (nativeFiles.Length == 0)
+                throw new InvalidOperationException("Missing native scene runtime.");
+            foreach (string nativeFile in nativeFiles)
+                _ = Open(nativeFile);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+
+            string[] arguments =
+            [
+                _driverPath,
+                "--input", source,
+                "--output", reportPath,
+                "--detector", detector,
+                "--job-id", request.JobId, "--source-id", request.SourceIdentity,
+                "--generation", request.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "--stream", request.StreamIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "--origin", Number(request.SourceOriginSeconds), "--threshold", Number(request.Threshold),
+                "--min-scene-len", request.MinSceneLenFrames.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "--start", Number(startSeconds), "--duration", Number(durationSeconds),
+            ];
+
+            ToolRunResult run = await ToolProcessRunner
+                .RunAsync(_pythonPath, arguments, timeout ?? DefaultTimeout, cancellationToken, Started)
+                .ConfigureAwait(false);
+
+            if (run.Started && !run.ExitConfirmed)
             {
-                TryDelete(reportPath);
-                return new SceneJobResult(false, "Scene report exceeds the 4 MiB limit.", source, null, null, null, null, null, [], run, null);
+                retained = true;
+                lease.Retain(activeProcess, run.ProcessId ?? -1, () =>
+                {
+                    foreach (var guard in guards) guard.Dispose();
+                    TryDelete(reportPath);
+                });
+                return new SceneJobResult(false, "Owned scene process exit is unconfirmed.", source, null, null, null, null, null, Array.Empty<SceneProposal>(), run, null)
+                { RetainedJobId = lease.JobId };
             }
-            json = await File.ReadAllTextAsync(reportPath, CancellationToken.None).ConfigureAwait(false);
-            TryDelete(reportPath);
-        }
-        else if (!string.IsNullOrWhiteSpace(run.StandardOutput))
-        {
-            json = run.StandardOutput;
-        }
 
-        if (json is null)
-        {
-            return new SceneJobResult(false, "The scene job produced no JSON report. " + run.Describe(), source, null, null, null, null, null, Array.Empty<SceneProposal>(), run, null);
-        }
+            string? json = null;
+            if (File.Exists(reportPath))
+            {
+                if (new FileInfo(reportPath).Length > 4 * 1024 * 1024)
+                {
+                    TryDelete(reportPath);
+                    return new SceneJobResult(false, "Scene report exceeds the 4 MiB limit.", source, null, null, null, null, null, [], run, null);
+                }
+                json = await File.ReadAllTextAsync(reportPath, CancellationToken.None).ConfigureAwait(false);
+                TryDelete(reportPath);
+            }
+            else if (!string.IsNullOrWhiteSpace(run.StandardOutput))
+            {
+                json = run.StandardOutput;
+            }
 
-        if (!sourceIdentity.MatchesCurrentFile())
-            return new SceneJobResult(false, "Source changed during scene analysis.", source, null, null, null, null, null, [], run, null);
-        return Parse(source, json, run, request, startSeconds, durationSeconds, detector);
+            if (json is null)
+            {
+                return new SceneJobResult(false, "The scene job produced no JSON report. " + run.Describe(), source, null, null, null, null, null, Array.Empty<SceneProposal>(), run, null);
+            }
+
+            if (!sourceIdentity.MatchesCurrentFile())
+                return new SceneJobResult(false, "Source changed during scene analysis.", source, null, null, null, null, null, [], run, null);
+            return Parse(source, json, run, request, startSeconds, durationSeconds, detector);
+        }
+        finally
+        {
+            if (!retained)
+                foreach (var guard in guards) guard.Dispose();
+        }
     }
+
+    public bool TryReconcileStuckJob(Guid jobId) => Export.CopyJobAdmission.TryReconcile(jobId);
 
     private static string Number(double value) => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
 
