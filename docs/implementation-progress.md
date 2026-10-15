@@ -7,6 +7,15 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 authored audio edges — 15 October 2026
+
+After squash merge #37 (`7764fd5`), #40 adds an independently authored audio-edge
+fixture: all-channel AAC/AC-3 edge pulse timing passes, actual packet loss is rejected,
+and source-start AAC preserves observed 1024-sample skip/trim with six pulse mappings.
+This is fixture-specific native evidence, not production multitrack eligibility or
+sample-exact audio. See the [audio-edge record](validation/2026-10-15-m3-audio-edges.md).
+The remaining M3 gate stays in #34; M1 and #28 were not resumed.
+
 ## M3 finite stream-copy proof — 15 October 2026
 
 The first bounded #13 increment (#31) copies actual AVC IDR and HEVC Main10
