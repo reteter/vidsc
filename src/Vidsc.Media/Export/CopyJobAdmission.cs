@@ -2,7 +2,7 @@ using Vidsc.Media.Tooling;
 
 namespace Vidsc.Media.Export;
 
-/// <summary>One copy-backend owner across audio qualification and full export transactions.</summary>
+/// <summary>Shared admission for integrated copy, scene and evidence worker invocations.</summary>
 internal static class CopyJobAdmission
 {
     private static readonly SemaphoreSlim Slot = new(1, 1);
