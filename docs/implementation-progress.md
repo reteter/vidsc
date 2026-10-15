@@ -298,6 +298,11 @@ explicit user choice. PR Completion's existing validated landing helper supports
 script or repository-settings change was needed. Documented post-squash branch handling preserves
 branches when safe deletion refuses. This policy change does not authorize landing the workflow PR.
 
+The post-merge workflow now records standing authorization for routine cleanup after a separately
+approved PR merge: safe default-branch synchronization, exact merged-branch removal locally/from
+origin, pruning and issue-status reconciliation. Per-PR landing approval remains separate; unrelated
+work, active worktrees and ignored evidence are preserved, and safe-deletion refusals are reported.
+
 ## M4a bounded software-reference feasibility
 
 [#14](https://github.com/reteter/vidsc/issues/14) and

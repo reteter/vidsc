@@ -51,6 +51,7 @@
 - Use PR Completion for PR preparation/follow-up and Code Review where useful. Report current-head checks and review evidence.
 - Merge, auto-merge and queue enrollment require explicit user approval for the particular PR and current head; new commits invalidate approval.
 - Default to squash merge: one coherent PR becomes one default-branch commit. A merge commit is an explicit user-approved exception; do not choose rebase merge automatically. Use PR Completion's validated landing helper with the approved method. After squash, start new work from the refreshed default branch; never force-delete a branch merely because safe deletion rejects it.
+- After a confirmed, explicitly authorized merge, perform routine cleanup as standard under the user's standing authorization: safely synchronize the local default branch, remove that PR's merged feature branch locally and from origin, prune stale tracking refs, and reconcile closed-issue statuses. Verify the approved head, merge result and worktree dependencies first; preserve unrelated work and ignored evidence, and report any safe-deletion refusal. Follow docs/github-workflow.md; cleanup authorization never authorizes another PR's merge.
 - Keep delivery issues open until merge. Follow the documented issue-closure and branch-cleanup rules.
 
 ## Media safeguards and technical context

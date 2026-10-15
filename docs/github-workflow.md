@@ -45,7 +45,7 @@ The user grants standing authorization to create/maintain branches, commit, push
 4. Push with upstream tracking and create a PR against the confirmed base. Use a draft while acceptance is incomplete; a normal PR when ready for review. Describe the problem/result, linked issues, verification and material limits. Attach every PR to the current Codex chat. Never push directly to master or force-push.
 5. Follow current-head CI and review results in the active session. Fix in-scope failures and real findings, reply with evidence and resolve addressed threads. Re-run only affected checks or justified failures. Use PR Completion's watcher when using its completion workflow; preserve its cursor/output under ignored artifacts. Do not claim a reviewer approved merely because checks are green. Do not silently add reviewer bots, protection rules or schedules.
 6. At readiness, report the URL, head SHA, CI/review evidence and remaining limits, then await the user's merge decision. No merge, auto-merge or queue enrollment is allowed without explicit approval for that PR and head. Any new head invalidates approval. The user may merge in GitHub; if asking the agent to land, PR Completion's validated landing helper performs the protected action after approval. Never bypass protections or use admin privileges.
-7. Once GitHub confirms merge, fetch and fast-forward the local default branch only when safe. Remove a task branch only after confirming its work is merged and no other checkout/work depends on it; use safe local deletion, never forced deletion. Remote deletion requires the user's cleanup instruction or repository auto-delete policy. Confirm issue closure and remove obsolete status labels.
+7. Once GitHub confirms merge, perform the routine cleanup below under the user's standing cleanup authorization. Safely synchronize the local default branch, remove only the verified merged PR branch locally/from origin, prune tracking refs and reconcile issue closure/statuses. Report any retained work or safe-deletion refusal.
 
 Code Review provides PR inspection, diffs, checks and private review assistance. PR Completion coordinates preparation, CI/review repair and conflicts. Neither plugin supplies the user's merge decision. Routine PR follow-up in the active session is authorized; recurring/background monitoring requires a separate request. If a deferred host test is necessary for the change, keep the PR draft or explicitly blocked instead of inferring acceptance from CI.
 
@@ -68,12 +68,36 @@ method and surface any conflict instead of bypassing the queue. Do not add a cus
 If the plugin is unavailable, report that prerequisite and restore it before agent-driven landing;
 the user can still choose to merge through GitHub. Do not silently substitute a different mechanism.
 
-After a confirmed squash, fetch and start subsequent work from the updated default branch. Do not
-reuse the old feature branch for a new PR. Git ancestry checks may not recognize the original feature
-commits as merged, so git branch -d may refuse deletion. Verify the PR's merged head, resulting commit,
-absence of extra branch commits and worktree dependencies; if safe deletion still refuses, retain the
-branch and report it. Forced deletion needs a separate explicit cleanup decision. Remote deletion
-continues to require a user request or repository auto-delete policy.
+### Routine cleanup after an authorized merge
+
+The user grants standing authorization for routine cleanup after a separately authorized PR merge.
+Do it in the same session without asking again: synchronize the local default branch, remove that
+PR's verified merged feature branch locally and from origin, prune obsolete tracking refs, and
+reconcile closed issues. This does not authorize another PR's merge, deletion of unmerged work,
+forced deletion, history rewriting, or removal of ignored artifacts and evidence.
+
+1. Confirm GitHub reports `MERGED` for the approved head and record the resulting merge/squash
+   commit. Verify every still-existing local/remote feature tip matches that head, with no additional
+   commits or dependent worktrees. Preserve changed or unrelated work instead of resetting/stashing it.
+2. Fetch without pruning first so an existing upstream reference remains available for safe local
+   deletion. With a clean checkout, switch to the local default branch and fast-forward only to its
+   refreshed origin counterpart. Verify it contains the confirmed merge result. Start subsequent
+   work from this refreshed default, never from the old feature branch.
+3. Prefer `git branch -d <exact-feature-branch>` before deleting the remote branch. After squash,
+   Git may accept deletion against the still-existing upstream even though the original feature
+   commit is not an ancestor of the default branch. That upstream check is not proof of delivery;
+   the independent merged-head/result checks above remain mandatory.
+4. Check the remote tip again and delete only the exact merged feature branch, then fetch/prune
+   origin. If GitHub already deleted it, prune its stale tracking reference. Never delete a branch
+   that has advanced beyond the approved head. If safe local deletion refuses, retain that branch
+   and report it; do not force deletion or manufacture ancestry/upstream state to bypass the refusal.
+5. Confirm delivery issues closed and remove only obsolete `status:` labels. Close a milestone only
+   when its documented acceptance gate is evidenced. Report the final default-branch commit,
+   removed branches and any retained items; distinguish new active PR branches from stale work.
+
+Squash ancestry can still make safe local deletion refuse, particularly when the remote branch was
+already removed. A separate explicit decision is required for any forced deletion. Routine cleanup
+preserves source media, generated clips, runtime bundles and ignored workflow evidence.
 
 This is a repository workflow default, not a request to disable other methods in GitHub settings.
 Repository protections and merge-queue requirements still take precedence over a chosen mechanism;
