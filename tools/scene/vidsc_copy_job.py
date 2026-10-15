@@ -173,11 +173,10 @@ def execute(args):
         startPts=args.start_pts, endPts=args.end_pts, firstPacket=args.first_packet,
         lastPacket=args.last_packet, success=False, error=None)
     try:
-        # Native diagnostics can contain source paths; reports retain only stable
-        # failure classes, and any error-level decoder log closes validation.
-        with av.logging.Capture(local=False) as logs:
+        # Retain only an error latch; native messages can contain private source paths.
+        with inspection.NativeDecoderLogGate() as logs:
             qualify(args, result)
-        require(not any(level <= av.logging.ERROR for level, _, _ in logs), "NativeDecoderError")
+        require(not logs.failed, "NativeDecoderError")
         result["success"] = bool(result.get("checks")) and all(result["checks"].values())
     except Exception as exc:
         result["success"] = False
