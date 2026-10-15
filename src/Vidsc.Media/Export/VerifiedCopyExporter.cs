@@ -18,7 +18,7 @@ public sealed record CopyExportProgress(Guid JobId, RationalTime CopiedTime);
 /// qualified track route; transparent planner observations never authorize this exporter.
 /// </summary>
 public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli cli,
-    PacketAudioCopyVerifier? audioVerifier = null)
+    PacketAudioCopyVerifier? audioVerifier = null, MatroskaCopyVerifier? matroskaVerifier = null)
 {
     public Task<VerifiedCopyExportResult> ExportVideoOnlyAsync(string sourcePath,
         QualifiedCopyRange qualification, CopyBoundaryProposal proposal, string destination,
@@ -35,11 +35,18 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         => ExportAsync(sourcePath, qualification.Video, qualification, proposal, destination, journalDirectory,
             cancellationToken, processStarted, progress);
 
+    public Task<VerifiedCopyExportResult> ExportMatroskaVideoAsync(string sourcePath,
+        QualifiedCopyRange qualification, CopyBoundaryProposal proposal, MatroskaCopyOptions options,
+        string destination, string journalDirectory, CancellationToken cancellationToken,
+        Action<ToolProcessIdentity>? processStarted = null, IProgress<CopyExportProgress>? progress = null)
+        => ExportAsync(sourcePath, qualification, null, proposal, destination, journalDirectory,
+            cancellationToken, processStarted, progress, options with { SubtitleStreamIndices = options.SubtitleStreamIndices.ToArray() });
+
     private async Task<VerifiedCopyExportResult> ExportAsync(string sourcePath,
         QualifiedCopyRange qualification, QualifiedAudioCopyRange? audioQualification,
         CopyBoundaryProposal proposal, string destination, string journalDirectory,
         CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted,
-        IProgress<CopyExportProgress>? progress)
+        IProgress<CopyExportProgress>? progress, MatroskaCopyOptions? matroskaOptions = null)
     {
         Guid jobId = Guid.NewGuid();
         using var lease = await CopyJobAdmission.EnterAsync(jobId, cancellationToken).ConfigureAwait(false);
@@ -58,17 +65,36 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                 throw new InvalidOperationException("The proposal does not match the qualified finite manifest.");
             if (audioQualification is not null && audioVerifier is null)
                 throw new InvalidOperationException("The packet-aware audio verifier is unavailable.");
-            if (audioQualification is null && qualification.SourceContainerStartUs != 0)
+            if (matroskaOptions is not null && matroskaVerifier is null)
+                throw new InvalidOperationException("The Matroska mapping verifier is unavailable.");
+            if (audioQualification is null && matroskaOptions is null && qualification.SourceContainerStartUs != 0)
                 throw new InvalidOperationException("This CLI route requires a verified zero container start time.");
-            string? seek = audioQualification is null
+            string? seek = audioQualification is null && matroskaOptions is null
                 ? FormatExactSeek(new(qualification.Request.StartPts, qualification.Request.Source.TimeBase)) : null;
+            string extension = matroskaOptions is null ? ".mp4" : ".mkv";
+            if (!StringComparer.OrdinalIgnoreCase.Equals(Path.GetExtension(destination), extension))
+                throw new ArgumentException($"The selected verified container requires an explicit {extension} destination. Container conversion is never inferred from the extension.", nameof(destination));
             var source = InspectionSourceIdentity.Capture(sourcePath);
             if (source.IdentityKey != qualification.Request.Source.SourceId)
                 throw new InvalidOperationException("The source identity changed after qualification.");
             transaction = OwnedOutputTransaction.Prepare(jobId, source, destination, journalDirectory);
             FiniteOutputValidation output;
             IReadOnlyList<QualifiedAudioTiming>? audioTimings = null;
-            if (audioQualification is not null)
+            if (matroskaOptions is not null)
+            {
+                var current = await verifier.QualifyUnderLeaseAsync(sourcePath, qualification.Request, jobId,
+                    lease, cancellationToken, Started).ConfigureAwait(false);
+                if (current.ManifestID != qualification.ManifestID || current.SourceSHA256 != qualification.SourceSHA256
+                    || current.BuildIdentity != qualification.BuildIdentity)
+                    throw new InvalidOperationException("The source finite qualification changed.");
+                await matroskaVerifier!.RunUnderLeaseAsync(sourcePath, current, matroskaOptions, jobId,
+                    transaction.TemporaryPath, false, lease, cancellationToken, Started).ConfigureAwait(false);
+                transaction.ProtectForValidation();
+                output = await matroskaVerifier.RunUnderLeaseAsync(sourcePath, current, matroskaOptions, jobId,
+                    transaction.TemporaryPath, true, lease, cancellationToken, Started).ConfigureAwait(false);
+                progress?.Report(new(jobId, new(output.EndPts, output.TimeBase)));
+            }
+            else if (audioQualification is not null)
             {
                 var currentAudio = await audioVerifier!.QualifyUnderLeaseAsync(sourcePath, qualification,
                     audioQualification.AudioSelections, jobId, lease, cancellationToken, Started).ConfigureAwait(false);
@@ -133,6 +159,8 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                     throw new InvalidOperationException("Audio invocation is still retained.");
                 if (audioQualification is null && !verifier.ReleaseStuckGuards(jobId))
                     throw new InvalidOperationException("Finite video invocation is still retained.");
+                if (matroskaOptions is not null && !matroskaVerifier!.ReleaseStuckGuards(jobId))
+                    throw new InvalidOperationException("Matroska invocation is still retained.");
                 transaction?.Dispose();
             });
             return new(jobId, false, false, false, null, transaction?.JournalPath,

@@ -1,4 +1,5 @@
 using Vidsc.Media.Tooling;
+using Vidsc.Media.Inspection;
 
 namespace Vidsc.Media.Export;
 
@@ -68,6 +69,17 @@ internal static class CopyJobAdmission
                 this.cleanup = cleanup;
                 retainedOwner = this;
             }
+        }
+
+        internal NavigationProcessStuckException Retain(ToolProcessIdentity? identity,
+            NavigationProcessStuckException failure, Action cleanup)
+        {
+            Retain(identity, failure.ProcessId, cleanup);
+            return new(failure.ProcessId, failure)
+            {
+                RetainedJobId = JobId,
+                CleanupCompletion = failure.CleanupCompletion
+            };
         }
 
         public void Dispose()

@@ -28,6 +28,7 @@ internal sealed class StreamingProbeOwnership : IDisposable
     }
 
     private void Open(string path) => guards.Add(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read));
+    internal void Protect(string path) => Open(path);
     internal void ObserveStarted(ToolProcessIdentity identity) => process = identity;
 
     internal NavigationProcessStuckException Retain(NavigationProcessStuckException failure)

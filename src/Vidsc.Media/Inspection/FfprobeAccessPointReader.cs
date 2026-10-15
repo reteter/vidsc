@@ -22,10 +22,25 @@ public sealed class FfprobeAccessPointReader
         double startSeconds, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null,
         int maxPackets = 8)
     {
+        using var ownership = await StreamingProbeOwnership.EnterAsync(path, _executablePath, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await ReadCoreAsync(path, streamIndex, startSeconds, cancellationToken, identity =>
+            {
+                ownership.ObserveStarted(identity);
+                processStarted?.Invoke(identity);
+            }, maxPackets).ConfigureAwait(false);
+        }
+        catch (NavigationProcessStuckException exception) { throw ownership.Retain(exception); }
+    }
+
+    private async Task<IReadOnlyList<PacketAccessPointEvidence>> ReadCoreAsync(string path, int streamIndex,
+        double startSeconds, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted,
+        int maxPackets)
+    {
         if (streamIndex < 0 || !double.IsFinite(startSeconds)) throw new ArgumentOutOfRangeException(nameof(startSeconds));
         if (maxPackets is < 1 or > 16) throw new ArgumentOutOfRangeException(nameof(maxPackets));
         string interval = startSeconds.ToString("R", CultureInfo.InvariantCulture) + "%+#" + maxPackets.ToString(CultureInfo.InvariantCulture);
-        using var sourceGuard = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         string[] arguments = ["-v", "error", "-threads", "2", "-select_streams", streamIndex.ToString(CultureInfo.InvariantCulture),
             "-read_intervals", interval, "-show_packets", "-show_streams", "-show_data", "-show_entries",
             "stream=codec_name,nal_length_size,extradata:packet=pts,dts,pos,size,data", "-of", "json", "-i", path];

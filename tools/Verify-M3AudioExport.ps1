@@ -40,11 +40,7 @@ try
     var videoVerifier = new FiniteCopyVerifier(python, Path.Combine(Path.GetDirectoryName(driver)!, "vidsc_copy_job.py"));
     var audioVerifier = new PacketAudioCopyVerifier(python, driver);
     var video = await videoVerifier.QualifyAsync(sourcePath, request, Guid.NewGuid(), default);
-    var audio = await audioVerifier.QualifyAsync(sourcePath, video, [new(1, "aac")], Guid.NewGuid(), default);
-    bool ac3Refused = false;
-    try { await audioVerifier.QualifyAsync(sourcePath, video, [new(2, "ac3")], Guid.NewGuid(), default); }
-    catch (InvalidOperationException) { ac3Refused = true; }
-    Require(ac3Refused, "AC-3 context must be explicitly refused.");
+    var audio = await audioVerifier.QualifyAsync(sourcePath, video, [new(1, "aac"), new(2, "ac3")], Guid.NewGuid(), default);
     var bounds = new ResolvedFrameInterval(new(new(12288, tb), new(12288, tb)), new(new(24576, tb), new(24576, tb)));
     Require(CopyBoundaryPlanner.TryPropose(video.ToObservation().Binding, bounds,
         CopyBoundaryPolicy.Expand, [video.ToObservation()], out var proposal), "Qualified video did not reach planner.");
@@ -106,7 +102,7 @@ try
     var result = await exporter.ExportAudioAsync(sourcePath, audio, proposal!, destination, journals, default);
     Require(result.Success && result.ExitConfirmed && File.Exists(destination), "Audio promotion failed: " + result.Error);
     Require(result.PresentationEnd!.Value.AsSeconds() == Rational.FromInt64(1), "Audio route video end differs.");
-    Require(result.AudioTimings is { Count: 1 } && result.AudioTimings[0].StreamIndex == 1 &&
+    Require(result.AudioTimings is { Count: 2 } && result.AudioTimings[0].StreamIndex == 1 &&
         result.AudioTimings[0].OutputAudibleInterval == new CopyTimeInterval(Rational.Zero, Rational.FromInt64(1)),
         "Actual audio timing disclosure is missing.");
     Require(OwnedOutputTransaction.Recover(result.JournalPath!) == OwnedOutputRecoveryStatus.Recorded, "Recovery failed.");
@@ -127,7 +123,7 @@ try
     string[] checkArgs = [driver, "--phase", "validate", "--input", sourcePath, "--job-id", job.ToString("D"),
         "--source-id", source.SourceId, "--generation", "43", "--stream", "0", "--codec", "h264",
         "--first-packet", "12", "--last-packet", "23", "--start-pts", "12288", "--end-pts", "24576",
-        "--audio-stream", "1:aac", "--manifest-id", audio.ManifestID, "--output-media", damaged];
+        "--audio-stream", "1:aac", "--audio-stream", "2:ac3", "--manifest-id", audio.ManifestID, "--output-media", damaged];
     var invalid = await ToolProcessRunner.RunAsync(python, checkArgs, TimeSpan.FromSeconds(40), default);
     Require(invalid.ExitConfirmed && !invalid.Succeeded, "Invalid physical output was accepted.");
     var afterCancellation = await exporter.ExportAudioAsync(sourcePath, audio, proposal!,
@@ -137,7 +133,7 @@ try
         Path.Combine(work, "video-only.mp4"), journals, default);
     Require(videoOnly.Success, "Shared executor regressed the video-only route: " + videoOnly.Error);
     Require(Hash(sourcePath) == sourceHash, "Source changed.");
-    Console.WriteLine("PASS actual shared admission across independent audio/video callers, queued cancellation, AAC qualification/copy/validation/promotion, conflict, started cancellation, invalid output, slot reuse and video-only coexistence.");
+    Console.WriteLine("PASS actual shared admission across independent audio/video callers, queued cancellation, AAC+AC3 qualification/copy/validation/promotion, conflict, started cancellation, invalid output, slot reuse and video-only coexistence.");
 }
 catch (Exception exception) { Console.Error.WriteLine(exception); return 1; }
 return 0;

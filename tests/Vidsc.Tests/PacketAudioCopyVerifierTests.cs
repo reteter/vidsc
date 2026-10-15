@@ -43,11 +43,15 @@ public sealed class PacketAudioCopyVerifierTests
     [InlineData("coverage")]
     [InlineData("build")]
     [InlineData("python")]
+    [InlineData("planned-default")]
+    [InlineData("planned-language")]
     public void RefusesForgedFactsEvenWhenManifestIsRecomputed(string defect)
     {
         var (report, video) = Fixture(); var track = report["tracks"]![0]!;
         switch (defect)
         {
+            case "planned-default": track["outputDisposition"] = 0; break;
+            case "planned-language": track["outputLanguage"] = "pol"; break;
             case "python": report["build"]!["pythonExecutableSha256"] = new string('B', 64); RehashBuild(report["build"]!.AsObject()); break;
             case "forged-pcm": track["finitePcm"]![0]!["channelSha256"]![0] = new string('B', 64); break;
             case "stale": report["generation"] = 2; break;
@@ -62,12 +66,32 @@ public sealed class PacketAudioCopyVerifierTests
     }
 
     [Fact]
-    public async Task Ac3IsRefusedBeforeAnyProcessStarts()
+    public async Task UnknownCodecIsRefusedBeforeAnyProcessStarts()
     {
         var (_, video) = Fixture();
         var verifier = new PacketAudioCopyVerifier("missing-python", "missing-driver");
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => verifier.QualifyAsync("missing-source", video, [new(1, "ac3")], Job, CancellationToken.None));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => verifier.QualifyAsync("missing-source", video, [new(1, "opus")], Job, CancellationToken.None));
         Assert.Equal("UnsupportedAudioContextPolicy", error.Message);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Ac3RequiresFrameSeededNoiseAndNativeSideLayout(bool damagePolicy)
+    {
+        var (report, video) = Fixture();
+        var track = report["tracks"]![0]!;
+        track["codec"] = "ac3"; track["layout"] = "5.1(side)";
+        track["decoderPolicy"] = "ac3-cons_noisegen=1";
+        foreach (string key in new[] { "referenceFrames", "finiteFrames" })
+            foreach (var frame in track[key]!.AsArray()) frame!["layout"] = "5.1(side)";
+        RehashManifest(report);
+        AudioCopyReport Read() => PacketAudioCopyVerifier.ParseReport(report.ToJsonString(), video, [new(1, "ac3")], Job, "qualify", H, Helpers, Natives, H);
+        Assert.Equal(64, Read().ManifestID.Length);
+        if (damagePolicy) track["decoderPolicy"] = "ac3-native-default";
+        else track["layout"] = "5.1";
+        RehashManifest(report);
+        Assert.Throws<InvalidOperationException>(Read);
     }
 
     [Fact]
@@ -106,6 +130,7 @@ public sealed class PacketAudioCopyVerifierTests
         report["phase"] = "validate"; report["outputSha256"] = H; report["outputContainer"] = "mov,mp4,m4a,3gp,3g2,mj2";
         report["outputChapterCount"] = 0; report["outputStreamKinds"] = new JsonArray("video", "audio");
         var actual = report["tracks"]![0]!.DeepClone().AsObject();
+        actual["language"] = "und";
         actual["sourceStreamIndex"] = 1; actual["outputStreamIndex"] = 1;
         actual["packets"] = actual["selectedPackets"]!.DeepClone(); actual["frames"] = actual["finiteFrames"]!.DeepClone(); actual["pcm"] = actual["finitePcm"]!.DeepClone();
         report["outputTracks"] = new JsonArray(actual);
@@ -213,6 +238,7 @@ public sealed class PacketAudioCopyVerifierTests
     {
         var second = report["tracks"]![0]!.DeepClone(); second["streamIndex"] = 7;
         second["language"] = "pol";
+        second["outputLanguage"] = "pol";
         report["tracks"]!.AsArray().Add(second);
         RehashManifest(report);
         return [new(1, "aac"), new(7, "aac")];
@@ -225,6 +251,8 @@ public sealed class PacketAudioCopyVerifierTests
         foreach (var track in report["tracks"]!.AsArray())
         {
             var actual = track!.DeepClone();
+            actual["language"] = track["outputLanguage"]!.DeepClone();
+            actual["disposition"] = track["outputDisposition"]!.DeepClone();
             actual["sourceStreamIndex"] = track["streamIndex"]!.DeepClone(); actual["outputStreamIndex"] = output.Count + 1;
             actual["packets"] = actual["selectedPackets"]!.DeepClone(); actual["frames"] = actual["finiteFrames"]!.DeepClone(); actual["pcm"] = actual["finitePcm"]!.DeepClone();
             output.Add(actual); kinds.Add("audio");
@@ -280,11 +308,12 @@ public sealed class PacketAudioCopyVerifierTests
         var track = new JsonObject
         {
             ["streamIndex"] = 1, ["codec"] = "aac", ["timeBase"] = TB(), ["codecConfigurationSha256"] = H, ["sampleRate"] = 48000,
-            ["channels"] = 6, ["layout"] = "5.1", ["sampleFormat"] = "fltp", ["language"] = null, ["disposition"] = 1,
+            ["channels"] = 6, ["layout"] = "5.1", ["sampleFormat"] = "fltp", ["decoderPolicy"] = "aac-native-default", ["presentationPolicy"] = "observed-skip-presentation-v1", ["contextPolicy"] = "observed-packet-preroll", ["language"] = null, ["disposition"] = 1,
+            ["outputLanguage"] = "und", ["outputDisposition"] = 1,
             ["streamStartPts"] = 0, ["streamDurationPts"] = 3072, ["decoderDelay"] = 0,
             ["referencePackets"] = new JsonArray(Packet(0, false), Packet(1, false), Packet(2, false)),
             ["rereadPackets"] = new JsonArray(Packet(0, false), Packet(1, false), Packet(2, false)), ["selectedPackets"] = new JsonArray(Packet(0, false), Packet(1, false)),
-            ["prerollOrdinals"] = new JsonArray(), ["prerollPolicy"] = "intersection-only; exact-full-source-context-test",
+            ["prerollOrdinals"] = new JsonArray(), ["prerollPolicy"] = "observed-initial-padding; exact-source-context-test",
             ["packetInterval"] = Interval(0, 2048), ["intendedAudibleInterval"] = Interval(0, 2048), ["leadingExtension"] = Time(0), ["trailingExtension"] = Time(0),
             ["referenceFrames"] = new JsonArray(AudioFrame(0), AudioFrame(1), AudioFrame(2)), ["finiteFrames"] = new JsonArray(AudioFrame(0), AudioFrame(1)),
             ["referencePcm"] = new JsonArray(Block()), ["finitePcm"] = new JsonArray(Block()),

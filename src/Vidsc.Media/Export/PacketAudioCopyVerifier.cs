@@ -44,7 +44,7 @@ internal sealed record AudioCopyReport(string ManifestID, string BuildIdentity, 
 
 public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath)
 {
-    internal const string PolicyName = "aac48k51-exact-intersection-v1";
+    internal const string PolicyName = "aac-ac3-48k51-observed-preroll-v3";
     private const int MaxReport = 2 * 1024 * 1024;
     private const long MaxBytes = 16 * 1024 * 1024;
     private static readonly string[] Helpers = ["vidsc_audio_copy_job.py", "vidsc_audio_copy.py", "vidsc_copy_job.py", "vidsc_inspection_job.py"];
@@ -75,11 +75,10 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         catch (NavigationProcessStuckException exception)
         {
             // The shared owner roots this verifier and its guarded invocation until reconciliation.
-            lease.Retain(active, exception.ProcessId, () =>
+            throw lease.Retain(active, exception, () =>
             {
                 if (!ReleaseStuckGuards(jobId)) throw new InvalidOperationException("Audio invocation is still retained.");
             });
-            throw;
         }
     }
 
@@ -157,15 +156,21 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
     {
         ValidateSelections(video, selections); Require(jobId != Guid.Empty && !stuckGuards.ContainsKey(jobId), "Invalid or unreconciled job identity.");
         await invocationSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var requestedCancellation = cancellationToken;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(40));
+        cancellationToken = deadline.Token;
         var guards = new List<FileStream>(); bool retained = false;
         ToolProcessIdentity? activeProcess = null;
         void Started(ToolProcessIdentity process) { activeProcess = process; processStarted?.Invoke(process); }
-        FileStream Open(string path) { var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read); guards.Add(stream); return stream; }
+        FileStream Open(string path) { var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan); guards.Add(stream); return stream; }
         try
         {
-            var source = Open(sourcePath); Require(source.Length is > 0 and <= MaxBytes, "Source budget exceeded.");
+            var source = Open(sourcePath); Require(source.Length > 0 && (video.Request.SourceWindow || source.Length <= MaxBytes), "Source budget exceeded.");
             Require(InspectionSourceIdentity.Capture(sourcePath).IdentityKey == video.Request.Source.SourceId, "Source identity changed.");
-            string sourceHash = Digest(source); Require(sourceHash == video.SourceSHA256, "Qualified source changed.");
+            string sourceHash = await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false);
+            Require(sourceHash == video.SourceSHA256, "Qualified source changed.");
             string pythonHash = Digest(Open(pythonPath));
             Require(Path.GetFileName(driverPath) == Helpers[0], "Unexpected audio driver name.");
             var helperHashes = Helpers.ToDictionary(h => h, h =>
@@ -187,6 +192,8 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
                 ("first-packet", r.FirstPacket), ("last-packet", r.LastPacket), ("start-pts", r.StartPts), ("end-pts", r.EndPts) })
                 args.AddRange(["--" + key, value.ToString(CultureInfo.InvariantCulture)]);
             foreach (var selection in selections) args.AddRange(["--audio-stream", selection.StreamIndex.ToString(CultureInfo.InvariantCulture) + ":" + selection.CodecName]);
+            if (r.SourceWindow) args.Add("--source-window");
+            if (r.TerminalEnd is not null) args.AddRange(["--terminal-end-pts", r.EndPts.ToString(CultureInfo.InvariantCulture)]);
             if (outputPath is not null) args.AddRange(["--output-media", Path.GetFullPath(outputPath), "--manifest-id", manifest!]);
             var result = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(40), cancellationToken, Started, MaxReport).ConfigureAwait(false);
             if (result.Started && !result.ExitConfirmed)
@@ -199,9 +206,14 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
             cancellationToken.ThrowIfCancellationRequested();
             Require(result.Succeeded && result.ExitConfirmed && !result.StandardError.Contains("[output truncated by vidsc]", StringComparison.Ordinal) &&
                 !result.StandardError.Contains("[output capture failed]", StringComparison.Ordinal), "Audio verifier failed or report is incomplete" + FailureCode(result.StandardOutput));
-            Require(InspectionSourceIdentity.Capture(sourcePath).IdentityKey == r.Source.SourceId && Digest(source) == sourceHash, "Source changed during verification.");
+            Require(InspectionSourceIdentity.Capture(sourcePath).IdentityKey == r.Source.SourceId &&
+                await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false) == sourceHash, "Source changed during verification.");
             Require(output is null || Digest(output) == outputHash, "Output changed during verification.");
             return ParseReport(result.StandardOutput, video, selections, jobId, phase, sourceHash, helperHashes, nativeHashes!, pythonHash, outputHash);
+        }
+        catch (OperationCanceledException exception) when (!requestedCancellation.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("Audio verification exceeded its 40-second invocation budget.", exception);
         }
         finally
         {
@@ -237,7 +249,7 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
             "Failed audio report.");
         Require(S(root, "phase") == phase && S(root, "jobId") == jobId.ToString("D") && S(root, "sourceIdentity") == request.Source.SourceId &&
             N(root, "generation") == request.Source.Generation && Hash(root, "sourceSha256") == sourceHash && sourceHash == video.SourceSHA256 &&
-            S(root, "policy") == PolicyName && N(root, "sourceContainerStartUs") == 0, "Stale audio report.");
+            S(root, "policy") == PolicyName && root.GetProperty("sourceContainerStartUs").GetInt64() == video.SourceContainerStartUs, "Stale audio report.");
         Rational start = Seconds(request.StartPts, request.Source.TimeBase), end = Seconds(request.EndPts, request.Source.TimeBase);
         Require(R(root.GetProperty("commonStart")) == start && R(root.GetProperty("commonEnd")) == end && R(root.GetProperty("commonShift")).IsZero &&
             end - start <= Rational.FromInt64(30), "Common audio epoch differs.");
@@ -255,9 +267,15 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         var tracks = Rows(root, "tracks", 2); Require(tracks.Length == selections.Count, "Audio selection count differs.");
         int packetCount = Rows(root.GetProperty("videoReport"), "referencePackets", 1024).Length;
         var timings = new List<QualifiedAudioTiming>();
+        bool hasSelectedDefault = tracks.Any(t => N(t, "disposition") == 1);
         for (int i = 0; i < tracks.Length; i++)
         {
             var track = tracks[i]; Representation(track);
+            Require(N(track, "outputDisposition") == (hasSelectedDefault ? N(track, "disposition") : i == 0 ? 1 : 0)
+                && S(track, "outputLanguage") == (track.GetProperty("language").ValueKind == JsonValueKind.Null
+                    ? "und" : S(track, "language")), "Planned default/language policy differs.");
+            Require((track.TryGetProperty("sourceWindow", out var window) && window.GetBoolean()) == video.Request.SourceWindow,
+                "Audio source traversal policy differs.");
             Require(N(track, "streamIndex") == selections[i].StreamIndex && S(track, "codec") == selections[i].CodecName, "Audio selection order differs.");
             var packets = Packets(track, "referencePackets", true); packetCount = checked(packetCount + packets.Length);
             Require(packetCount <= 1024, "Aggregate packet budget exceeded.");
@@ -266,17 +284,28 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
             var expected = packets.Where(p => Time(p, "pts") < end && Time(p, "pts") + Time(p, "duration") > start).ToArray();
             Require(expected.Length > 0 && EqualRows(selected, expected), "Audio packet membership differs.");
             for (int j = 1; j < selected.Length; j++) Require(N(selected[j], "sequence") == N(selected[j - 1], "sequence") + 1, "Noncontiguous audio packet selection.");
-            Require(Rows(track, "prerollOrdinals", 1024).Length == 0 && S(track, "prerollPolicy") == "intersection-only; exact-full-source-context-test", "Unsupported audio preroll.");
-            var (packetStart, packetEnd) = Extents(selected);
+            var preroll = track.TryGetProperty("prerollPackets", out _) ? Packets(track, "prerollPackets", false, allowEmpty: true) : [];
+            Require(S(track, "prerollPolicy") == "observed-initial-padding; exact-source-context-test"
+                && Rows(track, "prerollOrdinals", 1024).Select(p => p.GetInt64()).SequenceEqual(preroll.Select(p => N(p, "sequence")))
+                && preroll.All(p => Time(p, "pts") + Time(p, "duration") <= start && N(p, "sequence") < N(selected[0], "sequence"))
+                && preroll.All(p => packets.Any(r => FiniteCopyVerifier.Canonical(r) == FiniteCopyVerifier.Canonical(p))), "Unsupported audio preroll.");
+            var retained = preroll.Concat(selected).ToArray();
+            for (int j = 1; j < retained.Length; j++) Require(N(retained[j], "sequence") == N(retained[j - 1], "sequence") + 1, "Preroll sequence is not contiguous.");
+            long padding = track.TryGetProperty("requiredContextSamples", out var contextSamples) ? contextSamples.GetInt64()
+                : track.TryGetProperty("initialPaddingSamples", out var initialPadding) ? initialPadding.GetInt64() : 0;
+            Require(padding is >= 0 and <= 48000 && (preroll.Aggregate(Rational.Zero, (sum, p) => sum + Time(p, "duration")) * Rational.FromInt64(48000) >= Rational.FromInt64(padding)
+                || N(selected[0], "sequence") == 0), "Observed codec preroll is incomplete.");
+            var (packetStart, packetEnd) = Extents(retained);
             Require(Interval(track, "packetInterval", packetStart, packetEnd) && Interval(track, "intendedAudibleInterval", start, end) &&
                 R(track.GetProperty("leadingExtension")) == start - packetStart && R(track.GetProperty("trailingExtension")) == packetEnd - end &&
-                start >= packetStart && packetEnd >= end && start - packetStart <= Time(selected[0], "duration") && packetEnd - end <= Time(selected[^1], "duration"), "Audio packet extensions differ.");
+                start >= packetStart && packetEnd >= end && start - packetStart <= preroll.Aggregate(Time(selected[0], "duration"), (sum, p) => sum + Time(p, "duration"))
+                && packetEnd - end <= Time(selected[^1], "duration"), "Audio packet extensions differ.");
             var referenceFrames = Frames(track, "referenceFrames", startSample, endSample);
             var finiteFrames = Frames(track, "finiteFrames", startSample, endSample);
-            CheckReferenceContext(packets, referenceFrames, end); CheckDiscard(selected, finiteFrames);
+            CheckReferenceContext(packets, referenceFrames, end, video.Request.SourceWindow); CheckDiscard(retained, finiteFrames);
             Pcm(track, "referencePcm", startSample, endSample); Pcm(track, "finitePcm", startSample, endSample);
             Require(EqualRows(Rows(track, "referencePcm", 512), Rows(track, "finitePcm", 512)), "Finite audio PCM differs from full-source context.");
-            Edit(track.GetProperty("editObservation"), selected, finiteFrames);
+            Edit(track.GetProperty("editObservation"), retained, finiteFrames);
             timings.Add(new(selections[i].StreamIndex, selections[i].CodecName, new(start, end),
                 new(packetStart, packetEnd), new(Rational.Zero, end - start),
                 new(packetStart - start, packetEnd - start), start - packetStart, packetEnd - end));
@@ -309,16 +338,20 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
 
     private static void ValidateSelections(QualifiedCopyRange video, IReadOnlyList<AudioCopySelection> selections)
     {
-        Require(video.Request.CodecName == "h264" && video.SourceContainerStartUs == 0 && selections.Count is >= 1 and <= 2 &&
+        Require(video.Request.CodecName is "h264" or "hevc" && selections.Count is >= 1 and <= 2 &&
             selections.All(s => s.StreamIndex >= 0 && s.StreamIndex != video.Request.Source.StreamIndex) &&
             selections.Select(s => s.StreamIndex).Distinct().Count() == selections.Count, "Unsupported audio selection.");
-        Require(selections.All(s => s.CodecName == "aac"), "UnsupportedAudioContextPolicy");
+        Require(selections.All(s => s.CodecName is "aac" or "ac3"), "UnsupportedAudioContextPolicy");
     }
 
     private static void Representation(JsonElement track)
     {
-        Require(S(track, "codec") == "aac" && N(track, "sampleRate") == 48000 && N(track, "channels") == 6 && S(track, "layout") == "5.1" &&
+        string codec = S(track, "codec");
+        Require(codec is "aac" or "ac3" && N(track, "sampleRate") == 48000 && N(track, "channels") == 6 && S(track, "layout") == (codec == "aac" ? "5.1" : "5.1(side)") &&
             S(track, "sampleFormat") == "fltp" && R(track.GetProperty("timeBase")).IsPositive, "Unsupported native audio representation.");
+        Require(S(track, "decoderPolicy") == (codec == "aac" ? "aac-native-default" : "ac3-cons_noisegen=1"), "Unsupported native audio decoder policy.");
+        Require(S(track, "presentationPolicy") == "observed-skip-presentation-v1", "Unsupported decoded presentation policy.");
+        Require(S(track, "contextPolicy") is "observed-packet-preroll" or "source-start-prefix", "Unsupported codec context policy.");
         _ = Hash(track, "codecConfigurationSha256");
         Require(N(track, "disposition") is >= 0 and <= 1, "Unsupported audio disposition.");
         var language = track.GetProperty("language"); Require(language.ValueKind == JsonValueKind.Null || language.GetString() is { Length: <= 64 }, "Invalid audio language.");
@@ -328,13 +361,16 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         }
     }
 
-    private static JsonElement[] Packets(JsonElement track, string key, bool ordinals)
+    private static JsonElement[] Packets(JsonElement track, string key, bool ordinals, bool allowEmpty = false)
     {
-        var packets = Rows(track, key, 1024); Require(packets.Length > 0, "Missing audio packets."); long bytes = 0;
+        var packets = Rows(track, key, 1024); Require(allowEmpty || packets.Length > 0, "Missing audio packets."); long bytes = 0;
+        bool window = track.TryGetProperty("sourceWindow", out var sourceWindow) && sourceWindow.GetBoolean();
+        long ordinalBase = window ? N(track, "packetOrdinalBase") : 0;
         Rational tb = R(track.GetProperty("timeBase"));
         for (int i = 0; i < packets.Length; i++)
         {
-            var p = packets[i]; Require(N(p, "sequence") is >= 0 and <= 1023 && (!ordinals || N(p, "sequence") == i) &&
+            var p = packets[i]; Require(N(p, "sequence") >= 0 && N(p, "sequence") < (window ? 10_000_000 : 1024)
+                && (!ordinals || N(p, "sequence") == i + ordinalBase) &&
                 R(p.GetProperty("timeBase")) == tb && N(p, "duration") > 0 && N(p, "size") is > 0 and <= MaxBytes, "Invalid audio packet.");
             bytes = checked(bytes + N(p, "size")); Require(bytes <= MaxBytes, "Audio packet byte budget exceeded.");
             _ = Time(p, "pts"); _ = Time(p, "dts"); _ = Hash(p, "payloadSha256"); _ = Skip(p);
@@ -364,7 +400,14 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         for (int i = 0; i < frames.Length; i++)
         {
             var f = frames[i]; Require(R(f.GetProperty("timeBase")).IsPositive && N(f, "samples") is > 0 and <= 4096 && N(f, "sampleRate") == 48000 && N(f, "channels") == 6 &&
-                S(f, "layout") == "5.1" && S(f, "sampleFormat") == "fltp", "Invalid native audio frame.");
+                S(f, "layout") == S(track, "layout") && S(f, "sampleFormat") == "fltp", "Invalid native audio frame.");
+            if (f.TryGetProperty("rawPts", out var raw))
+            {
+                long skip = N(f, "presentationSkipSamples");
+                Require(skip is >= 0 and <= 48000 && (skip == 0 || S(track, "codec") == "ac3")
+                    && Seconds(raw.GetInt64(), R(f.GetProperty("timeBase"))) + Rational.Create(skip, 48000) == Time(f, "pts"),
+                    "Decoded skip presentation mapping differs.");
+            }
             long coordinate = Grid(Time(f, "pts")); Require(i == 0 || coordinate == previous, "Native audio coverage has a hole or overlap.");
             if (i == 0) first = coordinate;
             previous = checked(coordinate + N(f, "samples")); bytes = checked(bytes + N(f, "samples") * 24); Require(bytes <= MaxBytes, "Native audio memory budget exceeded.");
@@ -385,11 +428,11 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         Require(next == end && checked((end - start) * 24) <= MaxBytes, "Projected PCM is incomplete.");
     }
 
-    private static void CheckReferenceContext(JsonElement[] packets, (long Start, long End) frames, Rational audibleEnd)
+    private static void CheckReferenceContext(JsonElement[] packets, (long Start, long End) frames, Rational audibleEnd, bool window = false)
     {
         // A complete post-range source packet keeps unknown terminal padding outside this capability.
         Require(Time(packets[^1], "pts") >= audibleEnd &&
-            frames.Start - Grid(Time(packets[0], "pts")) == Skip(packets[0]).Leading &&
+            (window || frames.Start - Grid(Time(packets[0], "pts")) == Skip(packets[0]).Leading) &&
             packets.Skip(1).All(p => Skip(p).Leading == 0) &&
             packets.Take(packets.Length - 1).All(p => Skip(p).Trailing == 0), "Unsupported source audio context.");
     }
@@ -415,8 +458,13 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
     {
         Representation(actual);
         Require(N(actual, "sourceStreamIndex") == N(source, "streamIndex") && N(actual, "outputStreamIndex") == outputIndex &&
-            EqualFields(source, actual, "codec", "codecConfigurationSha256", "sampleRate", "channels", "layout", "sampleFormat", "language", "disposition"), "Output audio mapping differs.");
-        var selected = Rows(source, "selectedPackets", 1024); var packets = Packets(actual, "packets", true);
+            EqualFields(source, actual, "codec", "codecConfigurationSha256", "sampleRate", "channels", "layout", "sampleFormat", "decoderPolicy", "presentationPolicy"), "Output audio mapping differs.");
+        long expectedDisposition = source.TryGetProperty("outputDisposition", out var disposition) ? disposition.GetInt64() : N(source, "disposition");
+        var expectedLanguage = source.TryGetProperty("outputLanguage", out var language) ? language : source.GetProperty("language");
+        Require(N(actual, "disposition") == expectedDisposition && FiniteCopyVerifier.Canonical(actual.GetProperty("language")) == FiniteCopyVerifier.Canonical(expectedLanguage),
+            "Output default/language policy differs.");
+        var selected = (source.TryGetProperty("prerollPackets", out _) ? Rows(source, "prerollPackets", 1024) : [])
+            .Concat(Rows(source, "selectedPackets", 1024)).ToArray(); var packets = Packets(actual, "packets", true);
         Require(packets.Length == selected.Length, "Output audio packet count differs.");
         for (int i = 0; i < selected.Length; i++)
         {

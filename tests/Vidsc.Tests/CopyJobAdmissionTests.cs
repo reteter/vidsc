@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using Vidsc.Media.Export;
 using Vidsc.Media.Tooling;
+using Vidsc.Media.Inspection;
 using Xunit;
 
 namespace Vidsc.Tests;
@@ -12,6 +13,34 @@ public sealed class CopyJobAdmissionCollection { }
 [Collection("Copy job admission")]
 public sealed class CopyJobAdmissionTests
 {
+    [Fact]
+    public async Task RetainedFailureCarriesReconciliationIdentityAndReleasesAfterExactExit()
+    {
+        Guid job = Guid.NewGuid();
+        using var lease = await CopyJobAdmission.EnterAsync(job, default);
+        var identity = CurrentProcess();
+        var exited = identity with { StartedAtUtc = identity.StartedAtUtc.AddSeconds(-1) };
+        var failure = new NavigationProcessStuckException(identity.ProcessId, new IOException("Synthetic unconfirmed exit"))
+        { CleanupCompletion = Task.CompletedTask };
+        int cleaned = 0;
+        try
+        {
+            var propagated = lease.Retain(exited, failure, () => cleaned++);
+            Assert.Equal(job, propagated.RetainedJobId);
+            Assert.Equal(failure.ProcessId, propagated.ProcessId);
+            Assert.Same(failure, propagated.InnerException);
+            Assert.Same(failure.CleanupCompletion, propagated.CleanupCompletion);
+            Assert.False(CopyJobAdmission.TryReconcile(Guid.NewGuid()));
+            Assert.Equal(0, cleaned);
+            Assert.True(CopyJobAdmission.TryReconcile(propagated.RetainedJobId!.Value));
+            Assert.Equal(1, cleaned);
+            Assert.False(CopyJobAdmission.TryReconcile(job));
+            using var next = await CopyJobAdmission.EnterAsync(Guid.NewGuid(), default).WaitAsync(TimeSpan.FromSeconds(5));
+            next.EnsureActive();
+        }
+        finally { CopyJobAdmission.TryReconcile(job); }
+    }
+
     [Fact]
     public async Task IndependentCallersSerializeAndCancelledWaiterDoesNotConsumeSlot()
     {
