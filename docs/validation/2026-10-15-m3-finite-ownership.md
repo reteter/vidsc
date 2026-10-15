@@ -83,8 +83,10 @@ cleanup ordering, call-site migration and test teardown.
 
 ## Limits
 
-This closes the finite copy-verifier slice only. Scene/index/inspection adapters
-and application composition remain in #48; the application-wide one-media-worker
+This closes the finite copy-verifier slice only. The subsequent
+[scene/evidence slice](2026-10-15-m3-worker-admission.md) extends admission to two
+existing adapters. Other probe/index/navigation adapters and application
+composition remain in #48; the application-wide one-media-worker
 contract is not complete. Playback stays independent, no UI is exposed, no media
 capability or source-duration limit is widened, and full M3 remains open. M1 stays
 deferred and #28 excluded.

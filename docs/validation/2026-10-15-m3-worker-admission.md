@@ -60,6 +60,14 @@ PowerShell parsing and four rollback scenarios. Exact-delta ownership review fou
 no actionable defect. All native jobs and builds run serially; raw paths/logs,
 fixtures, generated projects and outputs remain in ignored artifacts.
 
+The final packaged regression at frozen implementation `77b6990` also passes.
+Release runtime/CLI/scene checks and promotion pass; application smoke is
+deliberately skipped under M1 deferral. The same bounded adapter harness checks
+actual scene/evidence/copy coordination, both queued and started cancellation,
+protected files, reuse and unchanged source bytes. No implementation or binary
+replacement runs concurrently. Subsequent edits record evidence only; this final
+phase follows the assessed initial 1/3 diagnostic without resetting that budget.
+
 ## Remaining scope
 
 Other probe/index/navigation adapters and application composition/reconciliation

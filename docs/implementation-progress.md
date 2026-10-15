@@ -7,6 +7,17 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 scene/evidence ownership — 15 October 2026
+
+After #53 squash (`0c35c6e`), #54 integrates existing scene and independent-evidence
+workers with shared admission and retained file protection. Stuck results or
+exceptions expose a separate reconciliation GUID; string report IDs and media
+parsers stay unchanged. [Evidence](validation/2026-10-15-m3-worker-admission.md)
+records 22 focused cases, 423 canonical CI cases and passing packaged
+scene/evidence/copy coordination and cancellation. Initial diagnostics stopped
+after assessment at 1/3. Other adapters/application composition remain in #48;
+M1, #28 and full M3 acceptance are not resumed or implied.
+
 ## M3 finite-video ownership — 15 October 2026
 
 After #51 squash (`c38074b`), #52 adds shared admission to standalone finite-video
