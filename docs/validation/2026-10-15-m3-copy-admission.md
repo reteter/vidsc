@@ -79,10 +79,12 @@ follow the assessed initial 1/3 diagnostic result; they do not reset that budget
 
 ## Remaining boundary
 
-This is one copy-backend admission boundary, not the completed application-wide
-media-worker contract. Public standalone finite-video qualification, scene jobs,
-indexing/inspection adapters and application composition remain in #48. Their
-admission and unconfirmed-exit ownership are not certified by these tests. Playback
+This checkpoint establishes one copy-backend admission boundary, not the completed
+application-wide media-worker contract. The subsequent
+[finite-video ownership slice](2026-10-15-m3-finite-ownership.md) covers standalone
+finite qualification. Scene jobs, indexing/inspection adapters and application
+composition remain in #48. Their admission and unconfirmed-exit ownership are not
+certified by these tests. Playback
 stays independent. No UI route is exposed and no priority/preemption behavior is
 introduced. Codec, source-duration, packet/PCM limits and copied-audio precision
 are unchanged. Full M3, deferred M1 and excluded #28 are not accepted by this slice.

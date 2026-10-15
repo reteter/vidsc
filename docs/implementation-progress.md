@@ -7,6 +7,16 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 finite-video ownership — 15 October 2026
+
+After #51 squash (`c38074b`), #52 adds shared admission to standalone finite-video
+qualification and keeps source/helper/interpreter/native/output handles protected
+through invocation and unconfirmed exit. The exporter reuses its existing lease.
+[Evidence](validation/2026-10-15-m3-finite-ownership.md) records 52 focused cases,
+420 canonical CI cases and passing final packaged AAC/AVC/HEVC adapter checks.
+Initial diagnostics stopped after assessment at 1/3. #48 remains open for other
+adapters/application composition; no M1, #28 or full M3 acceptance is implied.
+
 ## M3 shared copy-job admission — 15 October 2026
 
 After #49 squash (`6d39140`), #50 shares admission across independent audio
