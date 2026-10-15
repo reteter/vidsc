@@ -7,6 +7,15 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 active native error gates — 15 October 2026
+
+After #46 squash (`f4cb31a`), #47 replaces passive export-worker log capture with
+bounded ERROR/FATAL/PANIC latches, preserving warnings and nested/thread ownership.
+The [logging evidence](validation/2026-10-15-m3-native-logging.md) records 37 native
+controls, the assessed 2/3 diagnostic budget and passing packaged AAC/AVC/HEVC
+regressions. Canonical CI passes 409 cases. No broader media capability, UI, M1 or
+#28 work is implied; full M3 remains open.
+
 ## M3 conditional packet-aware AAC backend — 15 October 2026
 
 After #44 squash (`5343248`), #43 adds source-bound packet-aware AAC copy with exact

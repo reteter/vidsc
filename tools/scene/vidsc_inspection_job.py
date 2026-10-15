@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 from pathlib import Path
 import time
 
@@ -14,6 +15,44 @@ MAX_SECONDS = 30
 # Conservative pixel budget, independent of aspect ratio; native max_pixels is
 # installed before decoder open so the post-decode plane check is only secondary.
 MAX_PIXELS = 1920 * 1080
+
+
+class NativeDecoderLogGate(logging.Handler):
+    """Error latch for one synchronous worker scope, including native decoder threads.
+
+    No message text is retained or forwarded. Nested scopes each observe errors;
+    independently overlapping Python caller scopes are outside this worker contract.
+    """
+    def __init__(self):
+        super().__init__(logging.ERROR)
+        self.failed = False
+
+    def emit(self, record):
+        # Never call native/logging APIs here: decoder callbacks can run on other threads.
+        self.failed = True
+
+    def __enter__(self):
+        import av
+        self.logger = logging.getLogger("libav")
+        self.previous = (self.logger.level, self.logger.propagate,
+            av.logging.get_level(), av.logging.get_skip_repeated())
+        self.logger.addHandler(self)
+        self.logger.setLevel(logging.ERROR)
+        self.logger.propagate = False
+        # Capture would divert callbacks away from these handlers. Do not nest Capture.
+        av.logging.set_skip_repeated(False)
+        av.logging.set_level(av.logging.ERROR)
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        import av
+        level, propagate, native_level, skip_repeated = self.previous
+        av.logging.set_level(native_level)
+        av.logging.set_skip_repeated(skip_repeated)
+        self.logger.removeHandler(self)
+        self.logger.setLevel(level)
+        self.logger.propagate = propagate
+        self.close()
 
 
 def validate_dimensions(width, height, pixel_format=None):

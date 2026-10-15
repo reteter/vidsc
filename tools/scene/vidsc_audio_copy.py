@@ -363,13 +363,12 @@ def execute(args):
         require(1 <= len(selections) <= 2 and len(set(selections)) == len(selections) and args.stream not in selections,
             "InvalidAudioSelection")
         source = Path(args.input)
-        with av.logging.Capture(local=False) as logs:
+        with inspection.NativeDecoderLogGate() as logs:
             with av.open(str(source)) as container:
                 require("mp4" in container.format.name.split(","), "UnsupportedSourceContainer")
             video_args = type(args)(**vars(args))
             video_args.output_media = None
-            # The nested video Capture owns its logs. Capture is passive unless the runtime
-            # enables PyAV logging; raw evidence and decoder exceptions remain the gates.
+            # Nested video errors latch both scopes; the failed video report also propagates.
             vr = video.execute(video_args)
             require(vr["success"], vr.get("error") or "VideoQualificationRejected")
             budget.check()
@@ -403,7 +402,7 @@ def execute(args):
                     validate_output(source, output, args, report, budget)
             require(inspection.source_digest(source) == report["sourceSha256"], "SourceChanged")
             budget.check()
-        require(not any(level <= av.logging.ERROR for level, _, _ in logs), "NativeDecoderError")
+        require(not logs.failed, "NativeDecoderError")
         report["success"] = True
     except Exception as exc:
         report["success"] = False

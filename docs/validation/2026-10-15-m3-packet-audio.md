@@ -88,8 +88,8 @@ to 16 MiB. These are per-pass bounds, not a measured total process-memory cap.
 A one-second cut from a 20-second source is outside this capability. Two-track
 schema/parser tests do not establish a two-track native corpus acceptance.
 
-The pinned PyAV logging default is `None`; workers do not call `set_level`.
-Consequently `Capture`/`NativeDecoderError` is passive in this runtime, not an
+At the PR #46 checkpoint, the pinned PyAV logging default was `None` and workers
+did not call `set_level`. Consequently `Capture`/`NativeDecoderError` was passive, not an
 additional proved error gate. A nested video capture owns its own log buffer.
 Decoder exceptions, corrupt-frame checks, raw packet/time evidence and complete
 native reconstruction comparisons remain active. Enabling logging and testing
@@ -97,7 +97,8 @@ thread/nested-capture behavior requires a separate bounded task; it is not chang
 implicitly in this increment. Python handle flush improves observed write position
 but does not flush FFmpeg's internal mux buffers; the final physical file-size
 check remains mandatory.
-Follow-up [#47](https://github.com/reteter/vidsc/issues/47) owns the logging gate.
+Follow-up [#47](https://github.com/reteter/vidsc/issues/47) owns the logging gate;
+see the subsequent [active logging evidence](2026-10-15-m3-native-logging.md).
 
 The initial diagnostic budget was three attempts:
 
