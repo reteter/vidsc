@@ -131,11 +131,12 @@ remaining blockers. Reconciliation identity branches are unit tested and reviewe
 a genuinely unconfirmed native exit was not forced in the acceptance run.
 The refreshed bundle passes its staged runtime/CLI/scene checks. Application smoke
 is deliberately skipped under the M1 deferral; no new UI/playback acceptance is claimed.
-`Vidsc.App` does not yet invoke this audio route. Standalone qualification leases
-are per verifier instance; the current harness owns one instance and awaits calls
-sequentially. Application integration must provide the planned shared media-worker
-ownership across instances and operation types before exposing this route.
-That prerequisite is tracked in [#48](https://github.com/reteter/vidsc/issues/48).
+At this checkpoint, `Vidsc.App` did not invoke the audio route and standalone
+qualification admission was per verifier instance. The subsequent
+[copy-admission slice](2026-10-15-m3-copy-admission.md) shares admission across
+audio qualification and complete exports. Application integration and the remaining
+adapter ownership are still prerequisites tracked in
+[#48](https://github.com/reteter/vidsc/issues/48).
 
 ## Review corrections
 

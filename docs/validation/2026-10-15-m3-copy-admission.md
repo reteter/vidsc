@@ -66,6 +66,17 @@ PowerShell parsing and four promotion/rollback scenarios. The prior focused
 ownership review found no blocker; the identified missing absent-PID control is
 now exercised. Raw command logs, fixtures and output journals remain ignored.
 
+The final regression phase uses frozen implementation commit `8c1617d` and a
+refreshed Release. Bundle runtime/CLI/scene checks and promotion pass; application
+smoke remains deliberately skipped under the M1 deferral. The two existing
+affected adapter harnesses run serially with the development CLI directory removed
+from PATH. AAC passes the new independent-caller queue control and its full
+export/cancellation/validation/reuse path. AVC and HEVC each pass actual
+qualification/planner/copy/validation/promotion, conflict preservation,
+forged-proposal refusal, confirmed cancellation and late-conflict retention.
+Only evidence documentation changes after this phase. These final regressions
+follow the assessed initial 1/3 diagnostic result; they do not reset that budget.
+
 ## Remaining boundary
 
 This is one copy-backend admission boundary, not the completed application-wide

@@ -7,6 +7,17 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 shared copy-job admission — 15 October 2026
+
+After #49 squash (`6d39140`), #50 shares admission across independent audio
+qualification instances and full audio/video exports. Retained ownership roots
+guards/transactions until explicit process reconciliation and cleanup.
+[Evidence](validation/2026-10-15-m3-copy-admission.md) records 39 focused cases,
+417 canonical CI cases and passing packaged AAC/AVC/HEVC adapter regressions,
+including queued cancellation without process/transaction startup. The initial
+diagnostic budget stopped at 1/3 after assessment. Remaining application/adapters
+stay in #48; full M3, M1 and #28 acceptance is not implied.
+
 ## M3 active native error gates — 15 October 2026
 
 After #46 squash (`f4cb31a`), #47 replaces passive export-worker log capture with
