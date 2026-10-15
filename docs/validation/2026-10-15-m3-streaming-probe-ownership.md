@@ -32,6 +32,10 @@ admission and guards. Per-reader reconciliation delegates to the existing owner.
 - Synthetic ownership tests hold cleanup incomplete after a simulated reused PID,
   then verify pending cleanup blocks release and completed success/fault allows
   exactly one release. Existing coordinator tests cover live/unknown identities.
+- Release bundle assembly and staged verification passed on frozen implementation
+  `91b63b1`; application smoke testing was skipped. One final packaged adapter
+  coordination/cancellation/reuse run passed with the development FFmpeg directory
+  removed from PATH. No measured code changed during the final run.
 
 The bounded evidence supports these two reader lifetimes, not a full application
 single-worker claim. It does not simulate a genuinely unkillable native process.
