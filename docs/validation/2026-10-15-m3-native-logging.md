@@ -68,3 +68,23 @@ is synthetic, read-only and retained in ignored artifacts. Example (new report p
 This is not a new codec/context proof, a complete native-error taxonomy or full M3
 acceptance. The standalone M2 inspection entrypoint is unchanged. Shared application
 worker ownership remains in #48; no UI integration, M1 or #28 work is resumed.
+
+## Packaged regression
+
+At frozen implementation commit `8395d7c`, the canonical CI passes 409 cases,
+Release build, PowerShell parsing and four rollback scenarios. A refreshed Release
+passes its runtime/CLI/scene gates; application smoke is deliberately skipped under
+the M1 deferral. The existing affected integration checks run serially against the
+packaged Python, production helpers and CLI, with the development CLI directory
+removed from PATH:
+
+- `tools/Verify-M3AudioExport.ps1` passes actual AAC qualification, packet copy,
+  independent output validation/promotion, conflict preservation, started
+  cancellation, malformed output refusal, slot reuse and video-only coexistence.
+- `tools/Verify-M3Export.ps1` passes actual AVC/HEVC qualification/planner/export,
+  full output validation, recorded promotion, conflicts, forged-proposal refusal,
+  confirmed cancellation and retained late-conflict recovery.
+
+These two named checks are the final regression phase after assessment of the
+initial 2/3 diagnostics. No source helper or compiled code changed during it;
+subsequent changes only record evidence. Raw outputs and host logs remain ignored.
