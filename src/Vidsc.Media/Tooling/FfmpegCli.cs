@@ -36,8 +36,10 @@ public sealed class FfmpegCli
         return new FfmpegCli(toolset.FfmpegPath!, toolset.FfprobePath!);
     }
 
-    public Task<ToolRunResult> RunAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null)
-        => ToolProcessRunner.RunAsync(FfmpegPath, arguments.ToList(), timeout ?? DefaultTimeout, cancellationToken, processStarted);
+    public Task<ToolRunResult> RunAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null,
+        Action<ToolProcessIdentity>? processStarted = null, Action<string>? progressLine = null)
+        => ToolProcessRunner.RunAsync(FfmpegPath, arguments.ToList(), timeout ?? DefaultTimeout, cancellationToken, processStarted,
+            standardOutputLine: progressLine);
 
     public Task<ToolRunResult> RunProbeAsync(IEnumerable<string> arguments, CancellationToken cancellationToken, TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null)
         => ToolProcessRunner.RunAsync(FfprobePath, arguments.ToList(), timeout ?? DefaultTimeout, cancellationToken, processStarted);

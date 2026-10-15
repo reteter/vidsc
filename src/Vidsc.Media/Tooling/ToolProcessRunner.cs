@@ -53,7 +53,8 @@ public static class ToolProcessRunner
         TimeSpan timeout,
         CancellationToken cancellationToken,
         Action<ToolProcessIdentity>? processStarted = null,
-        int maxCapturedCharacters = MaxCapturedCharacters)
+        int maxCapturedCharacters = MaxCapturedCharacters,
+        Action<string>? standardOutputLine = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executablePath);
         ArgumentNullException.ThrowIfNull(arguments);
@@ -87,7 +88,7 @@ public static class ToolProcessRunner
             return Failed(executablePath, arguments, exception.Message, stopwatch.Elapsed);
         }
 
-        Task<string> stdoutTask = ReadBoundedAsync(process.StandardOutput, cancellationToken, maxCapturedCharacters);
+        Task<string> stdoutTask = ReadBoundedAsync(process.StandardOutput, cancellationToken, maxCapturedCharacters, standardOutputLine);
         Task<string> stderrTask = ReadBoundedAsync(process.StandardError, cancellationToken, MaxCapturedCharacters);
 
         bool timedOut = false;
@@ -147,11 +148,14 @@ public static class ToolProcessRunner
             StartupError = error,
         };
 
-    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken, int limit)
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken, int limit,
+        Action<string>? lineReceived = null)
     {
         var buffer = new char[8192];
         var builder = new System.Text.StringBuilder();
         bool truncated = false;
+        var line = lineReceived is null ? null : new System.Text.StringBuilder();
+        bool lineTooLong = false;
 
         while (true)
         {
@@ -168,8 +172,27 @@ public static class ToolProcessRunner
             if (read == 0)
                 break;
 
+            if (line is not null)
+            {
+                for (int i = 0; i < read; i++)
+                {
+                    if (buffer[i] == '\n')
+                    {
+                        if (!lineTooLong) lineReceived!(line.ToString().TrimEnd('\r'));
+                        line.Clear();
+                        lineTooLong = false;
+                    }
+                    else if (line.Length < 4096) line.Append(buffer[i]);
+                    else lineTooLong = true;
+                }
+            }
+
             if (builder.Length < limit)
-                builder.Append(buffer, 0, Math.Min(read, limit - builder.Length));
+            {
+                int retained = Math.Min(read, limit - builder.Length);
+                builder.Append(buffer, 0, retained);
+                truncated |= retained < read;
+            }
             else
                 truncated = true;
         }
