@@ -437,6 +437,8 @@ $sceneDriverSource = Join-Path $PSScriptRoot 'scene/vidsc_scene_job.py'
 Copy-Item -LiteralPath $sceneDriverSource -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_inspection_job.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_copy_job.py') -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_audio_copy_job.py') -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_audio_copy.py') -Destination $sceneStage -Force
 
 # The scene runtime is preferred in its RELOCATABLE form (an official embeddable Python plus
 # project-local wheels, produced by tools/Build-Scene-Runtime.ps1). A legacy virtual environment is

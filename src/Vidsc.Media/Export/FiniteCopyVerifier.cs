@@ -216,9 +216,9 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
     private static Rational ReadTB(JsonElement e) => Rational.Create(N(e, "numerator"), N(e, "denominator"));
     private static string Hash(JsonElement e, string key) { string h = S(e, key); Require(IsHash(h), "Invalid SHA256."); return h.ToUpperInvariant(); }
     private static bool IsHash(string? h) => h?.Length == 64 && h.All(Uri.IsHexDigit);
-    private static string Sha(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    internal static string Sha(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static readonly JsonSerializerOptions CanonicalOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
-    private static string Canonical(JsonElement e, bool excludeBuildHash = false) => e.ValueKind switch
+    internal static string Canonical(JsonElement e, bool excludeBuildHash = false) => e.ValueKind switch
     {
         JsonValueKind.Object => "{" + string.Join(", ", e.EnumerateObject().Where(p => !excludeBuildHash || p.Name != "buildSha256").OrderBy(p => p.Name, StringComparer.Ordinal).Select(p => JsonSerializer.Serialize(p.Name, CanonicalOptions) + ": " + Canonical(p.Value))) + "}",
         JsonValueKind.Array => "[" + string.Join(", ", e.EnumerateArray().Select(p => Canonical(p))) + "]",

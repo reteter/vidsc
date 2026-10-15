@@ -10,7 +10,7 @@ namespace Vidsc.Media.Export;
 
 public sealed record VerifiedCopyExportResult(Guid JobId, bool Success, bool Cancelled,
     bool ExitConfirmed, string? Destination, string? JournalPath, string? Error,
-    RationalTime? PresentationEnd = null);
+    RationalTime? PresentationEnd = null, IReadOnlyList<QualifiedAudioTiming>? AudioTimings = null);
 
 public sealed record CopyExportProgress(Guid JobId, RationalTime CopiedTime);
 
@@ -18,15 +18,32 @@ public sealed record CopyExportProgress(Guid JobId, RationalTime CopiedTime);
 /// Bounded full-scan video-only MP4 route. Audio, subtitles and chapters require a separately
 /// qualified track route; transparent planner observations never authorize this exporter.
 /// </summary>
-public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli cli)
+public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli cli,
+    PacketAudioCopyVerifier? audioVerifier = null)
 {
     private static readonly SemaphoreSlim JobSlot = new(1, 1);
     private static StuckJob? stuckJob;
 
-    public async Task<VerifiedCopyExportResult> ExportVideoOnlyAsync(string sourcePath,
+    public Task<VerifiedCopyExportResult> ExportVideoOnlyAsync(string sourcePath,
         QualifiedCopyRange qualification, CopyBoundaryProposal proposal, string destination,
         string journalDirectory, CancellationToken cancellationToken,
         Action<ToolProcessIdentity>? processStarted = null, IProgress<CopyExportProgress>? progress = null)
+        => ExportAsync(sourcePath, qualification, null, proposal, destination, journalDirectory,
+            cancellationToken, processStarted, progress);
+
+    /// <summary>Packet-aware AAC route; eligibility requires exact audible native reconstruction.</summary>
+    public Task<VerifiedCopyExportResult> ExportAudioAsync(string sourcePath,
+        QualifiedAudioCopyRange qualification, CopyBoundaryProposal proposal, string destination,
+        string journalDirectory, CancellationToken cancellationToken,
+        Action<ToolProcessIdentity>? processStarted = null, IProgress<CopyExportProgress>? progress = null)
+        => ExportAsync(sourcePath, qualification.Video, qualification, proposal, destination, journalDirectory,
+            cancellationToken, processStarted, progress);
+
+    private async Task<VerifiedCopyExportResult> ExportAsync(string sourcePath,
+        QualifiedCopyRange qualification, QualifiedAudioCopyRange? audioQualification,
+        CopyBoundaryProposal proposal, string destination, string journalDirectory,
+        CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted,
+        IProgress<CopyExportProgress>? progress)
     {
         Guid jobId = Guid.NewGuid();
         await JobSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -43,54 +60,78 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         {
             if (proposal.Selected != qualification.ToObservation())
                 throw new InvalidOperationException("The proposal does not match the qualified finite manifest.");
-            if (qualification.SourceContainerStartUs != 0)
+            if (audioQualification is not null && audioVerifier is null)
+                throw new InvalidOperationException("The packet-aware audio verifier is unavailable.");
+            if (audioQualification is null && qualification.SourceContainerStartUs != 0)
                 throw new InvalidOperationException("This CLI route requires a verified zero container start time.");
-            string seek = FormatExactSeek(new(qualification.Request.StartPts, qualification.Request.Source.TimeBase));
             var source = InspectionSourceIdentity.Capture(sourcePath);
             if (source.IdentityKey != qualification.Request.Source.SourceId)
                 throw new InvalidOperationException("The source identity changed after qualification.");
             transaction = OwnedOutputTransaction.Prepare(jobId, source, destination, journalDirectory);
-            var current = await verifier.QualifyAsync(sourcePath, qualification.Request, jobId,
-                cancellationToken, Started).ConfigureAwait(false);
-            if (current.SourceSHA256 != qualification.SourceSHA256 || current.ConfigSHA256 != qualification.ConfigSHA256 ||
-                current.ManifestID != qualification.ManifestID || current.BuildIdentity != qualification.BuildIdentity ||
-                current.SourceContainerStartUs != qualification.SourceContainerStartUs)
-                throw new InvalidOperationException("The source, finite manifest or verifier build changed.");
-
-            int packets = checked(current.Request.LastPacket - current.Request.FirstPacket + 1);
-            // -y applies only to our exclusively registered, delete-protected temporary file.
-            // For this proved stream-copy route, -frames:v counts selected packets, including RASL.
-            string[] arguments = ["-hide_banner", "-nostdin", "-v", "error", "-progress", "pipe:1", "-y", "-ss", seek,
-                "-i", Path.GetFullPath(sourcePath), "-map", $"0:{current.Request.Source.StreamIndex}",
-                "-an", "-sn", "-dn", "-c:v", "copy", "-frames:v", packets.ToString(CultureInfo.InvariantCulture),
-                "-map_metadata", "-1", "-map_chapters", "-1", "-avoid_negative_ts", "disabled",
-                "-use_editlist", "1", "-f", "mp4", transaction.TemporaryPath];
-            var run = await cli.RunAsync(arguments, cancellationToken, TimeSpan.FromSeconds(40), Started, line =>
+            FiniteOutputValidation output;
+            IReadOnlyList<QualifiedAudioTiming>? audioTimings = null;
+            if (audioQualification is not null)
             {
-                const string key = "out_time_us=";
-                if (progress is not null && line.StartsWith(key, StringComparison.Ordinal) &&
-                    long.TryParse(line.AsSpan(key.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out long us))
-                    progress.Report(new(jobId, new(us, Rational.Create(1, 1_000_000))));
-            }).ConfigureAwait(false);
-            if (run.Started && !run.ExitConfirmed)
-                throw new NavigationProcessStuckException(run.ProcessId ?? -1, new IOException("Export exit was not confirmed."));
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!run.Succeeded || !run.ExitConfirmed || run.StandardOutput.Contains("[output capture failed]", StringComparison.Ordinal))
-                throw new IOException("The owned FFmpeg copy process failed; the temporary output was retained.");
-            transaction.ProtectForValidation();
-            var output = await verifier.ValidateOutputAsync(sourcePath, current, jobId, transaction.TemporaryPath,
-                cancellationToken, Started).ConfigureAwait(false);
+                var currentAudio = await audioVerifier!.QualifyAsync(sourcePath, qualification,
+                    audioQualification.AudioSelections, jobId, cancellationToken, Started).ConfigureAwait(false);
+                if (currentAudio.ManifestID != audioQualification.ManifestID ||
+                    currentAudio.BuildIdentity != audioQualification.BuildIdentity)
+                    throw new InvalidOperationException("The source, audio context or verifier build changed.");
+                await audioVerifier.WriteAsync(sourcePath, currentAudio, jobId, transaction.TemporaryPath,
+                    cancellationToken, Started).ConfigureAwait(false);
+                transaction.ProtectForValidation();
+                output = await audioVerifier.ValidateOutputAsync(sourcePath, currentAudio, jobId,
+                    transaction.TemporaryPath, cancellationToken, Started).ConfigureAwait(false);
+                audioTimings = currentAudio.AudioTimings;
+                // This route reports completion only after actual output validation, not packet write progress.
+                progress?.Report(new(jobId, new(output.EndPts, output.TimeBase)));
+            }
+            else
+            {
+                string seek = FormatExactSeek(new(qualification.Request.StartPts, qualification.Request.Source.TimeBase));
+                var current = await verifier.QualifyAsync(sourcePath, qualification.Request, jobId,
+                    cancellationToken, Started).ConfigureAwait(false);
+                if (current.SourceSHA256 != qualification.SourceSHA256 || current.ConfigSHA256 != qualification.ConfigSHA256 ||
+                    current.ManifestID != qualification.ManifestID || current.BuildIdentity != qualification.BuildIdentity ||
+                    current.SourceContainerStartUs != qualification.SourceContainerStartUs)
+                    throw new InvalidOperationException("The source, finite manifest or verifier build changed.");
+
+                int packets = checked(current.Request.LastPacket - current.Request.FirstPacket + 1);
+                // -y applies only to our exclusively registered, delete-protected temporary file.
+                // For this proved stream-copy route, -frames:v counts selected packets, including RASL.
+                string[] arguments = ["-hide_banner", "-nostdin", "-v", "error", "-progress", "pipe:1", "-y", "-ss", seek,
+                    "-i", Path.GetFullPath(sourcePath), "-map", $"0:{current.Request.Source.StreamIndex}",
+                    "-an", "-sn", "-dn", "-c:v", "copy", "-frames:v", packets.ToString(CultureInfo.InvariantCulture),
+                    "-map_metadata", "-1", "-map_chapters", "-1", "-avoid_negative_ts", "disabled",
+                    "-use_editlist", "1", "-f", "mp4", transaction.TemporaryPath];
+                var run = await cli.RunAsync(arguments, cancellationToken, TimeSpan.FromSeconds(40), Started, line =>
+                {
+                    const string key = "out_time_us=";
+                    if (progress is not null && line.StartsWith(key, StringComparison.Ordinal) &&
+                        long.TryParse(line.AsSpan(key.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out long us))
+                        progress.Report(new(jobId, new(us, Rational.Create(1, 1_000_000))));
+                }).ConfigureAwait(false);
+                if (run.Started && !run.ExitConfirmed)
+                    throw new NavigationProcessStuckException(run.ProcessId ?? -1, new IOException("Export exit was not confirmed."));
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!run.Succeeded || !run.ExitConfirmed || run.StandardOutput.Contains("[output capture failed]", StringComparison.Ordinal))
+                    throw new IOException("The owned FFmpeg copy process failed; the temporary output was retained.");
+                transaction.ProtectForValidation();
+                output = await verifier.ValidateOutputAsync(sourcePath, current, jobId, transaction.TemporaryPath,
+                    cancellationToken, Started).ConfigureAwait(false);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit(new(jobId, source.IdentityKey, transaction.TemporaryPath, output.OutputSHA256));
             completed = true;
             return new(jobId, true, false, true, Path.GetFullPath(destination), transaction.JournalPath, null,
-                new(output.EndPts, output.TimeBase));
+                new(output.EndPts, output.TimeBase), audioTimings);
         }
         catch (NavigationProcessStuckException exception)
         {
             // Keep both the source guard and the shared slot until that exact child is confirmed gone.
             retainOwnership = true;
-            lock (JobSlot) stuckJob = new(jobId, transaction, activeProcess, exception.ProcessId);
+            lock (JobSlot) stuckJob = new(jobId, transaction, activeProcess, exception.ProcessId,
+                audioQualification is null ? null : audioVerifier);
             return new(jobId, false, false, false, null, transaction?.JournalPath,
                 "An owned process has not confirmed exit. The export slot and source protection remain reserved.");
         }
@@ -141,6 +182,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             catch (ArgumentException) { /* The original process no longer exists. */ }
             catch (InvalidOperationException) { return false; }
             catch (System.ComponentModel.Win32Exception) { return false; }
+            if (retained.AudioVerifier is not null && !retained.AudioVerifier.ReleaseStuckGuards(jobId)) return false;
             retained.Transaction?.Dispose();
             stuckJob = null;
             JobSlot.Release();
@@ -158,5 +200,6 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             (value % 1_000_000).ToString("D6", CultureInfo.InvariantCulture);
     }
 
-    private sealed record StuckJob(Guid JobId, OwnedOutputTransaction? Transaction, ToolProcessIdentity? Process, int ProcessId);
+    private sealed record StuckJob(Guid JobId, OwnedOutputTransaction? Transaction,
+        ToolProcessIdentity? Process, int ProcessId, PacketAudioCopyVerifier? AudioVerifier);
 }
