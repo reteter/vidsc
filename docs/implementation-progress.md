@@ -7,6 +7,15 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 CLI audio selection assessment — 15 October 2026
+
+After squash merge #41 (`f51b09a`), #42 tests two packaged CLI seek/duration
+candidates against the accepted authored fixture. Both are refused: a video packet
+cap restores exact video but leaves extra leading audio and missing end context.
+Pulse timing alone would miss the first candidate's incorrect packet selection.
+See the [CLI selection assessment](validation/2026-10-15-m3-cli-audio.md).
+Production remains video-only; the command experiment stopped at its three-attempt budget.
+
 ## M3 authored audio edges — 15 October 2026
 
 After squash merge #37 (`7764fd5`), #40 adds an independently authored audio-edge
