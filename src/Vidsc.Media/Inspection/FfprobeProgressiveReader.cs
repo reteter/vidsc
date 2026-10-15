@@ -32,9 +32,28 @@ public sealed class FfprobeProgressiveReader
         if (request.StartTicks < 0 || request.EndTicks <= request.StartTicks ||
             (decimal)request.EndTicks - request.StartTicks > TimeSpan.FromSeconds(60).Ticks)
             throw new ArgumentOutOfRangeException(nameof(request), "Request a positive neighborhood of at most 60 seconds.");
+        using var ownership = await StreamingProbeOwnership.EnterAsync(path, _executablePath, ct).ConfigureAwait(false);
+        try
+        {
+            return await ReadCoreAsync(path, request, ct, identity =>
+            {
+                ownership.ObserveStarted(identity);
+                processStarted?.Invoke(identity);
+            }).ConfigureAwait(false);
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            throw ownership.Retain(exception);
+        }
+    }
+
+    public bool TryReconcileStuckJob(Guid retainedJobId) => StreamingProbeOwnership.TryReconcile(retainedJobId);
+
+    private async Task<ProgressiveInspectionSnapshot> ReadCoreAsync(string path, ProgressiveInspectionRequest request,
+        CancellationToken ct, Action<ToolProcessIdentity> processStarted)
+    {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(_timeout);
-        using var sourceGuard = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         int packetCount = 0, frameCount = 0;
         var traversals = new List<InspectionTraversal>();
         try
@@ -136,7 +155,6 @@ public sealed class FfprobeProgressiveReader
         using var process = new Process { StartInfo = start };
         if (!process.Start()) throw new IOException("ffprobe could not start.");
         Task<string> stderr = DrainErrorAsync(process.StandardError);
-        using var cancellation = ct.Register(() => _ = Task.Run(() => Kill(process)));
         try
         {
             processStarted?.Invoke(new ToolProcessIdentity(process.Id, _executablePath, process.StartTime.ToUniversalTime()));
@@ -171,14 +189,18 @@ public sealed class FfprobeProgressiveReader
         catch (Exception failure)
         {
             int processId = process.Id;
+            Task cleanup = CleanupAsync(process, stderr);
             try
             {
                 // The kill itself can fail or stall. Bound the complete termination/pipe sequence.
-                await CleanupAsync(process, stderr).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await cleanup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch (Exception cleanupFailure)
             {
-                throw new NavigationProcessStuckException(processId, new AggregateException(failure, cleanupFailure));
+                throw new NavigationProcessStuckException(processId, new AggregateException(failure, cleanupFailure))
+                {
+                    CleanupCompletion = Task.WhenAll(cleanup, stderr)
+                };
             }
             throw;
         }

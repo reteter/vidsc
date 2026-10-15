@@ -13,6 +13,7 @@ public sealed class NavigationProcessStuckException(int processId, Exception inn
     public int ProcessId { get; } = processId;
     /// <summary>Shared admission identity when an adapter retains process protection.</summary>
     public Guid? RetainedJobId { get; init; }
+    internal Task? CleanupCompletion { get; init; }
 }
 
 /// <summary>Bounded streaming probe, independent of the diagnostic stdout capture runner.</summary>
@@ -37,15 +38,26 @@ public sealed class FfprobeNavigationReader
     public async Task<NavigationMap> ReadAsync(string path, MediaStreamInfo video, long timelineOriginTicks,
         bool includeFrames, CancellationToken ct, Action<ToolProcessIdentity>? processStarted = null)
     {
+        using var ownership = await StreamingProbeOwnership.EnterAsync(path, _executablePath, ct).ConfigureAwait(false);
         try
         {
-            return await ReadCoreAsync(path, video, timelineOriginTicks, includeFrames, ct, processStarted).ConfigureAwait(false);
+            return await ReadCoreAsync(path, video, timelineOriginTicks, includeFrames, ct, identity =>
+            {
+                ownership.ObserveStarted(identity);
+                processStarted?.Invoke(identity);
+            }).ConfigureAwait(false);
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            throw ownership.Retain(exception);
         }
         catch (OperationCanceledException exception) when (!ct.IsCancellationRequested)
         {
             throw new TimeoutException($"ffprobe navigation exceeded its {_timeout} time limit. Retry or choose the faster key packet scan.", exception);
         }
     }
+
+    public bool TryReconcileStuckJob(Guid jobId) => StreamingProbeOwnership.TryReconcile(jobId);
 
     private async Task<NavigationMap> ReadCoreAsync(string path, MediaStreamInfo video, long timelineOriginTicks,
         bool includeFrames, CancellationToken ct, Action<ToolProcessIdentity>? processStarted = null)
@@ -151,7 +163,6 @@ public sealed class FfprobeNavigationReader
         using var process = new Process { StartInfo = start };
         if (!process.Start()) throw new IOException("ffprobe could not start.");
         Task<string> stderr = DrainErrorAsync(process.StandardError);
-        using var cancellation = ct.Register(() => _ = Task.Run(() => Kill(process)));
         try
         {
             processStarted?.Invoke(new ToolProcessIdentity(process.Id, _executablePath, process.StartTime.ToUniversalTime()));
@@ -183,14 +194,18 @@ public sealed class FfprobeNavigationReader
         catch (Exception failure)
         {
             int processId = process.Id;
+            Task cleanup = CleanupAsync(process, stderr);
             try
             {
                 // The kill itself can fail or stall. Bound the complete termination/pipe sequence.
-                await CleanupAsync(process, stderr).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                await cleanup.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
             catch (Exception cleanupFailure)
             {
-                throw new NavigationProcessStuckException(processId, new AggregateException(failure, cleanupFailure));
+                throw new NavigationProcessStuckException(processId, new AggregateException(failure, cleanupFailure))
+                {
+                    CleanupCompletion = Task.WhenAll(cleanup, stderr)
+                };
             }
             throw;
         }

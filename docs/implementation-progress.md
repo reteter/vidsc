@@ -7,6 +7,16 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 streaming probe ownership — 15 October 2026
+
+After #55 squash (`6a57952`), #56 coordinates navigation/progressive ffprobe reads
+with shared admission and source/executable/DLL guards. Retained cleanup must finish
+before exact-process reconciliation releases ownership. The focused review removed
+an untracked cancellation kill task. [Evidence](validation/2026-10-15-m3-streaming-probe-ownership.md)
+records 26 focused cases, 426 canonical CI cases and packaged adapter coordination,
+cancellation and reuse. Initial diagnostics used 3/3 attempts (one harness compile
+failure, two passes). This does not complete #48 or the full M3 gate.
+
 ## M3 scene/evidence ownership — 15 October 2026
 
 After #53 squash (`0c35c6e`), #54 integrates existing scene and independent-evidence
