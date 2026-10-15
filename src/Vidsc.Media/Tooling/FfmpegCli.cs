@@ -1,3 +1,5 @@
+using Vidsc.Media.Inspection;
+
 namespace Vidsc.Media.Tooling;
 
 /// <summary>
@@ -55,7 +57,7 @@ public sealed class FfmpegCli
     }
 
     /// <summary>Machine-readable probe of a single path.</summary>
-    public Task<ToolRunResult> ProbeJsonAsync(string path, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
+    public async Task<ToolRunResult> ProbeJsonAsync(string path, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
@@ -69,7 +71,19 @@ public sealed class FfmpegCli
             path,
         ];
 
-        return RunProbeAsync(arguments, cancellationToken, processStarted: processStarted);
+        using var ownership = await StreamingProbeOwnership.EnterAsync(path, FfprobePath, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var result = await RunProbeAsync(arguments, cancellationToken, processStarted: identity =>
+            {
+                ownership.ObserveStarted(identity);
+                processStarted?.Invoke(identity);
+            }).ConfigureAwait(false);
+            if (result.Started && !result.ExitConfirmed)
+                throw new NavigationProcessStuckException(result.ProcessId ?? -1, new IOException("Metadata probe exit was not confirmed."));
+            return result;
+        }
+        catch (NavigationProcessStuckException exception) { throw ownership.Retain(exception); }
     }
 
     /// <summary>

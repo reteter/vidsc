@@ -21,18 +21,27 @@ public sealed class StreamingProbeOwnershipTests
         bool started = false;
         Task progressive = new FfprobeProgressiveReader(executable).ReadAsync("\0invalid", new(source, 0, 10000000), stop.Token, _ => started = true);
         Task navigation = new FfprobeNavigationReader(executable).ReadAsync("\0invalid", null!, 0, true, stop.Token, _ => started = true);
+        Task metadata = new FfmpegCli(executable, executable).ProbeJsonAsync("\0invalid", stop.Token, _ => started = true);
+        Task access = new FfprobeAccessPointReader(executable).ReadAsync("\0invalid", 0, 0, stop.Token, _ => started = true);
+        Task discovery = new CopyRangeDiscovery(executable, "missing-driver").DiscoverAsync("\0invalid", source,
+            RationalTime.FromSeconds(0), RationalTime.FromSeconds(1), Vidsc.Core.Export.CopyBoundaryPolicy.Expand, stop.Token, _ => started = true);
         try
         {
             Assert.False(progressive.IsCompleted); Assert.False(navigation.IsCompleted);
+            Assert.False(metadata.IsCompleted); Assert.False(access.IsCompleted);
+            Assert.False(discovery.IsCompleted);
             stop.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => progressive);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => navigation);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => metadata);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => access);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => discovery);
             Assert.False(started);
         }
         finally
         {
             stop.Cancel();
-            foreach (Task task in new[] { progressive, navigation })
+            foreach (Task task in new[] { progressive, navigation, metadata, access, discovery })
                 try { await task; } catch (Exception) { /* Drain waiters after interrupted assertions. */ }
         }
     }
@@ -60,7 +69,7 @@ public sealed class StreamingProbeOwnershipTests
                 Assert.Throws<IOException>(() => File.WriteAllBytes(file, [9]));
             if (cleanupFails) cleanup.TrySetException(new IOException("Synthetic completed cleanup failure."));
             else cleanup.TrySetResult();
-            Assert.True(new FfprobeProgressiveReader(executable).TryReconcileStuckJob(job));
+            Assert.True(MediaWorkerOwnership.TryReconcile(job));
             Assert.False(StreamingProbeOwnership.TryReconcile(job));
             foreach (string file in new[] { source, executable, library }) File.WriteAllBytes(file, [1, 2, 3]);
             using var next = await CopyJobAdmission.EnterAsync(Guid.NewGuid(), default).WaitAsync(TimeSpan.FromSeconds(5));
