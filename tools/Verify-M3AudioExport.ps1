@@ -61,6 +61,7 @@ try
         }));
     using var queuedCancellation = new CancellationTokenSource();
     Task<QualifiedAudioCopyRange>? queuedAudio = null;
+    Task<QualifiedCopyRange>? queuedFinite = null;
     Task<VerifiedCopyExportResult>? queuedVideo = null;
     try
     {
@@ -69,13 +70,19 @@ try
         var otherVerifier = new PacketAudioCopyVerifier(python, driver);
         queuedAudio = otherVerifier.QualifyAsync(sourcePath, video, [new(1, "aac")], Guid.NewGuid(),
             queuedCancellation.Token, _ => Interlocked.Increment(ref queuedStarts));
+        queuedFinite = new FiniteCopyVerifier(python, Path.Combine(Path.GetDirectoryName(driver)!, "vidsc_copy_job.py"))
+            .QualifyAsync(sourcePath, request, Guid.NewGuid(), queuedCancellation.Token,
+                _ => Interlocked.Increment(ref queuedStarts));
         queuedVideo = new VerifiedCopyExporter(videoVerifier, new FfmpegCli(args[3], args[3]))
             .ExportVideoOnlyAsync(sourcePath, video, proposal!, Path.Combine(work, "queued.mp4"),
                 Path.Combine(work, "queued-journals"), queuedCancellation.Token,
                 _ => Interlocked.Increment(ref queuedStarts));
-        Require(!queuedAudio.IsCompleted && !queuedVideo.IsCompleted, "Independent callers bypassed admission.");
+        Require(!queuedAudio.IsCompleted && !queuedFinite.IsCompleted && !queuedVideo.IsCompleted,
+            "Independent callers bypassed admission.");
         queuedCancellation.Cancel();
         try { await queuedAudio; throw new Exception("Queued audio ignored cancellation."); }
+        catch (OperationCanceledException) { }
+        try { await queuedFinite; throw new Exception("Queued finite video ignored cancellation."); }
         catch (OperationCanceledException) { }
         try { await queuedVideo; throw new Exception("Queued video ignored cancellation."); }
         catch (OperationCanceledException) { }
@@ -87,7 +94,7 @@ try
         queuedCancellation.Cancel();
         release.Set();
         await heldQualification;
-        foreach (Task? pending in new Task?[] { queuedAudio, queuedVideo })
+        foreach (Task? pending in new Task?[] { queuedAudio, queuedFinite, queuedVideo })
         {
             if (pending is null) continue;
             try { await pending; }

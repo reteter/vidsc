@@ -86,8 +86,8 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             }
             else
             {
-                var current = await verifier.QualifyAsync(sourcePath, qualification.Request, jobId,
-                    cancellationToken, Started).ConfigureAwait(false);
+                var current = await verifier.QualifyUnderLeaseAsync(sourcePath, qualification.Request, jobId,
+                    lease, cancellationToken, Started).ConfigureAwait(false);
                 if (current.SourceSHA256 != qualification.SourceSHA256 || current.ConfigSHA256 != qualification.ConfigSHA256 ||
                     current.ManifestID != qualification.ManifestID || current.BuildIdentity != qualification.BuildIdentity ||
                     current.SourceContainerStartUs != qualification.SourceContainerStartUs)
@@ -115,7 +115,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                     throw new IOException("The owned FFmpeg copy process failed; the temporary output was retained.");
                 transaction.ProtectForValidation();
                 output = await verifier.ValidateOutputAsync(sourcePath, current, jobId, transaction.TemporaryPath,
-                    cancellationToken, Started).ConfigureAwait(false);
+                    lease, cancellationToken, Started).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
             transaction.Commit(new(jobId, source.IdentityKey, transaction.TemporaryPath, output.OutputSHA256));
@@ -131,6 +131,8 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             {
                 if (audioQualification is not null && !audioVerifier!.ReleaseStuckGuards(jobId))
                     throw new InvalidOperationException("Audio invocation is still retained.");
+                if (audioQualification is null && !verifier.ReleaseStuckGuards(jobId))
+                    throw new InvalidOperationException("Finite video invocation is still retained.");
                 transaction?.Dispose();
             });
             return new(jobId, false, false, false, null, transaction?.JournalPath,

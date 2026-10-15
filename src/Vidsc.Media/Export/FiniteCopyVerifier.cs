@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -37,6 +38,8 @@ internal sealed record FiniteCopyReport(string SourceSHA256, string ConfigSHA256
 public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
 {
     private const int MaxReport = 2 * 1024 * 1024;
+    private sealed record HeldInvocation(ToolProcessIdentity? Process, int ProcessId, List<FileStream> Guards);
+    private readonly ConcurrentDictionary<Guid, HeldInvocation> stuckGuards = new();
     public static bool TryCreate(MediaToolset tools, out FiniteCopyVerifier? verifier, out string? reason)
     {
         string driver = Path.Combine(tools.SceneDirectory, "vidsc_copy_job.py");
@@ -48,13 +51,36 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
     public async Task<QualifiedCopyRange> QualifyAsync(string sourcePath, FiniteCopyRequest request, Guid jobId,
         CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
+        using var lease = await CopyJobAdmission.EnterAsync(jobId, cancellationToken).ConfigureAwait(false);
+        ToolProcessIdentity? active = null;
+        void Started(ToolProcessIdentity identity) { active = identity; processStarted?.Invoke(identity); }
+        try
+        {
+            return await QualifyUnderLeaseAsync(sourcePath, request, jobId, lease, cancellationToken, Started).ConfigureAwait(false);
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            // The shared owner roots this verifier and its guards until the child exits.
+            lease.Retain(active, exception.ProcessId, () =>
+            {
+                if (!ReleaseStuckGuards(jobId)) throw new InvalidOperationException("Finite invocation is still retained.");
+            });
+            throw;
+        }
+    }
+
+    internal async Task<QualifiedCopyRange> QualifyUnderLeaseAsync(string sourcePath, FiniteCopyRequest request, Guid jobId,
+        CopyJobAdmission.Lease lease, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
+    {
+        CheckLease(lease, jobId);
         var report = await RunAsync(sourcePath, request, jobId, null, cancellationToken, processStarted).ConfigureAwait(false);
         return new(request, report.SourceSHA256, report.ConfigSHA256, report.ManifestID, report.BuildIdentity, report.SourceContainerStartUs);
     }
 
     internal async Task<FiniteOutputValidation> ValidateOutputAsync(string sourcePath, QualifiedCopyRange qualification,
-        Guid jobId, string outputPath, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
+        Guid jobId, string outputPath, CopyJobAdmission.Lease lease, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
+        CheckLease(lease, jobId);
         var report = await RunAsync(sourcePath, qualification.Request, jobId, outputPath, cancellationToken, processStarted).ConfigureAwait(false);
         Require(report.SourceSHA256 == qualification.SourceSHA256 && report.ConfigSHA256 == qualification.ConfigSHA256 &&
             report.ManifestID == qualification.ManifestID && report.BuildIdentity == qualification.BuildIdentity &&
@@ -62,45 +88,80 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
         return report.Output ?? throw new InvalidOperationException("Missing output validation.");
     }
 
+    public bool TryReconcileStuckJob(Guid jobId) => CopyJobAdmission.TryReconcile(jobId);
+
+    internal bool ReleaseStuckGuards(Guid jobId)
+    {
+        lock (stuckGuards)
+        {
+            if (!stuckGuards.TryGetValue(jobId, out var held)) return true;
+            if (held.Process is null || held.Process.ProcessId != held.ProcessId ||
+                !PacketAudioCopyVerifier.ProcessExitConfirmed(held.Process, held.ProcessId)) return false;
+            // Keep references registered if disposal fails so reconciliation can retry.
+            foreach (var guard in held.Guards) guard.Dispose();
+            return stuckGuards.TryRemove(jobId, out _);
+        }
+    }
+
+    private static void CheckLease(CopyJobAdmission.Lease lease, Guid jobId)
+    {
+        lease.EnsureActive();
+        Require(lease.JobId == jobId, "Copy admission job identity differs.");
+    }
+
     private async Task<FiniteCopyReport> RunAsync(string path, FiniteCopyRequest request, Guid jobId, string? outputPath,
         CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted)
     {
-        ValidateRequest(request); Require(jobId != Guid.Empty, "Missing job identity.");
-        using var source = Guard(path);
-        using var driver = Guard(driverPath);
-        using var inspection = Guard(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_inspection_job.py"));
-        Require(source.Length is > 0 and <= 16 * 1024 * 1024 && driver.Length <= MaxReport && inspection.Length <= MaxReport, "Input budget exceeded.");
-        Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId, "Source identity changed.");
-        string sourceHash = Digest(source), driverHash = Digest(driver), inspectionHash = Digest(inspection);
-        using var output = outputPath is null ? null : Guard(outputPath);
-        Require(output is null || output.Length is > 0 and <= 16 * 1024 * 1024, "Output budget exceeded.");
-        string? outputHash = output is null ? null : Digest(output);
-        List<string> args = [driverPath, "--input", Path.GetFullPath(path), "--job-id", jobId.ToString("D"),
-            "--source-id", request.Source.SourceId, "--codec", request.CodecName];
-        foreach (var pair in new (string, long)[] { ("generation", request.Source.Generation), ("stream", request.Source.StreamIndex),
-            ("first-packet", request.FirstPacket), ("last-packet", request.LastPacket), ("start-pts", request.StartPts), ("end-pts", request.EndPts) })
-            args.AddRange(["--" + pair.Item1, pair.Item2.ToString(CultureInfo.InvariantCulture)]);
-        if (outputPath is not null) args.AddRange(["--output-media", Path.GetFullPath(outputPath)]);
-        var process = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(40), cancellationToken, processStarted, MaxReport).ConfigureAwait(false);
-        if (process.Started && !process.ExitConfirmed)
-            throw new NavigationProcessStuckException(process.ProcessId ?? -1, new IOException("Finite verifier exit was not confirmed."));
-        cancellationToken.ThrowIfCancellationRequested();
-        Require(process.Succeeded && process.ExitConfirmed && !process.StandardError.Contains("[output truncated by vidsc]", StringComparison.Ordinal) &&
-            !process.StandardError.Contains("[output capture failed]", StringComparison.Ordinal), "Finite verifier process failed or report is incomplete.");
-        Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId && Digest(source) == sourceHash, "Source changed during verification.");
-        if (output is not null) Require(Digest(output) == outputHash, "Output changed during verification.");
-        var report = ParseReport(process.StandardOutput, request, jobId, sourceHash, driverHash, inspectionHash, outputHash);
-        using var parsed = JsonDocument.Parse(process.StandardOutput);
-        string nativeDirectory = Path.Combine(Path.GetDirectoryName(pythonPath)!, "Lib", "site-packages", "av.libs");
-        var nativeFiles = Directory.GetFiles(nativeDirectory, "*.dll");
-        var reported = parsed.RootElement.GetProperty("build").GetProperty("nativeDllSha256");
-        Require(nativeFiles.Length == reported.EnumerateObject().Count(), "Native verifier inventory differs.");
-        foreach (string native in nativeFiles)
+        ValidateRequest(request); Require(jobId != Guid.Empty && !stuckGuards.ContainsKey(jobId), "Invalid or unreconciled job identity.");
+        var guards = new List<FileStream>(); bool retained = false;
+        ToolProcessIdentity? activeProcess = null;
+        void Started(ToolProcessIdentity identity) { activeProcess = identity; processStarted?.Invoke(identity); }
+        FileStream Open(string filePath) { var stream = Guard(filePath); guards.Add(stream); return stream; }
+        try
         {
-            using var nativeGuard = Guard(native);
-            Require(Hash(reported, Path.GetFileName(native)) == Digest(nativeGuard), "Native verifier file hash differs.");
+            var source = Open(path);
+            var driver = Open(driverPath);
+            var inspection = Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_inspection_job.py"));
+            Require(source.Length is > 0 and <= 16 * 1024 * 1024 && driver.Length <= MaxReport && inspection.Length <= MaxReport, "Input budget exceeded.");
+            Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId, "Source identity changed.");
+            _ = Open(pythonPath);
+            string nativeDirectory = Path.Combine(Path.GetDirectoryName(pythonPath)!, "Lib", "site-packages", "av.libs");
+            var nativeHashes = Directory.GetFiles(nativeDirectory, "*.dll").ToDictionary(p => Path.GetFileName(p), p => Digest(Open(p)), StringComparer.Ordinal);
+            Require(nativeHashes.Count > 0, "Missing native runtime.");
+            string sourceHash = Digest(source), driverHash = Digest(driver), inspectionHash = Digest(inspection);
+            var output = outputPath is null ? null : Open(outputPath);
+            Require(output is null || output.Length is > 0 and <= 16 * 1024 * 1024, "Output budget exceeded.");
+            string? outputHash = output is null ? null : Digest(output);
+            List<string> args = [driverPath, "--input", Path.GetFullPath(path), "--job-id", jobId.ToString("D"),
+                "--source-id", request.Source.SourceId, "--codec", request.CodecName];
+            foreach (var pair in new (string, long)[] { ("generation", request.Source.Generation), ("stream", request.Source.StreamIndex),
+                ("first-packet", request.FirstPacket), ("last-packet", request.LastPacket), ("start-pts", request.StartPts), ("end-pts", request.EndPts) })
+                args.AddRange(["--" + pair.Item1, pair.Item2.ToString(CultureInfo.InvariantCulture)]);
+            if (outputPath is not null) args.AddRange(["--output-media", Path.GetFullPath(outputPath)]);
+            var process = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(40), cancellationToken, Started, MaxReport).ConfigureAwait(false);
+            if (process.Started && !process.ExitConfirmed)
+            {
+                retained = true;
+                Require(stuckGuards.TryAdd(jobId, new(activeProcess, process.ProcessId ?? -1, guards)), "Duplicate stuck job.");
+                throw new NavigationProcessStuckException(process.ProcessId ?? -1, new IOException("Finite verifier exit was not confirmed."));
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            Require(process.Succeeded && process.ExitConfirmed && !process.StandardError.Contains("[output truncated by vidsc]", StringComparison.Ordinal) &&
+                !process.StandardError.Contains("[output capture failed]", StringComparison.Ordinal), "Finite verifier process failed or report is incomplete.");
+            Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId && Digest(source) == sourceHash, "Source changed during verification.");
+            if (output is not null) Require(Digest(output) == outputHash, "Output changed during verification.");
+            var report = ParseReport(process.StandardOutput, request, jobId, sourceHash, driverHash, inspectionHash, outputHash);
+            using var parsed = JsonDocument.Parse(process.StandardOutput);
+            var reported = parsed.RootElement.GetProperty("build").GetProperty("nativeDllSha256");
+            Require(nativeHashes.Count == reported.EnumerateObject().Count(), "Native verifier inventory differs.");
+            foreach (var native in nativeHashes)
+                Require(Hash(reported, native.Key) == native.Value, "Native verifier file hash differs.");
+            return report;
         }
-        return report;
+        finally
+        {
+            if (!retained) foreach (var guard in guards) guard.Dispose();
+        }
     }
 
     internal static FiniteCopyReport ParseReport(string json, FiniteCopyRequest request, Guid jobId,
