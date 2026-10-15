@@ -138,6 +138,15 @@
     "why": "Scene detection runs in its own project-local runtime as a child process. The preferred bundle is the relocatable embeddable runtime; no development Python path is substituted when the bundle is missing."
   },
 
+  "accurateCut": {
+    "worker": "scene/vidsc_accurate_job.py",
+    "helpers": ["scene/vidsc_accurate_codec.py", "scene/vidsc_accurate_audio.py"],
+    "runtime": "scene.relocatableRuntime; isolated in-process PyAV encoders; separate CLI terminal reader",
+    "qualityPolicy": "accurate-cfr-reference-crf18-slow-v1",
+    "limits": "512 source pictures, 64 MiB compressed window, 64 boundary pixel views / 256 MiB, one output view, 1 GiB private process bytes, two codec threads",
+    "qualification": "MP4 AVC/x264 or HEVC Main10/x265 CFR only; fail closed for unqualified topology, display/HDR/HRD, MOV and NVIDIA"
+  },
+
   "distribution": {
     "decision": "unresolved",
     "statement": "This increment is a local-development build. Redistribution licence clearance has NOT been decided or claimed for the Flyleaf native FFmpeg build, the CLI FFmpeg build (compiled with --enable-gpl --enable-version3) or the Python/PyAV runtime."

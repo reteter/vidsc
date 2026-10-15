@@ -333,3 +333,18 @@ D3D11 playback and source/output join comparisons pass within the user-approved
 short host check. This establishes the bounded M4a gate. NVIDIA HEVC/MOV and
 HDR/HRD remain unverified; audio is unselected. No accurate-export UI/production
 path, NVENC or later milestone was enabled; source media remains unchanged.
+
+### 2026-10-15 — M4b bounded production backend (#63)
+
+The isolated production PyAV worker and qualified managed transaction adapter now
+implement encoded boundaries with independently copied AVC/Main10 interior,
+rational source/output mapping, exact DTS/configuration/native reconstruction and
+fixed quality validation. The final packaged twelve-cell AVC/Main10/supplied x265
+matrix and an additional nonzero mixed AAC/AC-3 two-join export pass, including
+actual original EOF, source preservation, conflict/cancel and physical corruption
+controls. The bounded first proof and refinement ledgers are preserved in the
+[M4b evidence record](validation/2026-10-15-m4b-backend.md).
+Both findings from one independent review are fixed. Canonical CI passes 437 tests
+and rollback checks; Release native/package gates and the authorized short frozen
+hardware/D3D11 playback/join check pass. This establishes the bounded backend gate;
+delivery awaits PR merge. M5b UI and other deferred milestones remain excluded.
