@@ -63,6 +63,24 @@ Canonical CI passes 420 cases, Release build, tracked PowerShell parsing and fou
 promotion/rollback scenarios. Raw logs, synthetic fixtures and output journals
 remain in ignored artifacts.
 
+At frozen implementation commit `6bfc8ae`, refreshed Release runtime/CLI/scene
+checks and promotion pass. Application smoke is deliberately skipped under the
+M1 deferral. Final affected adapter checks run serially with the development CLI
+removed from PATH:
+
+- AAC passes finite/audio/video queued admission, cancellation before launch,
+  actual copy/validation/promotion, conflict preservation, started cancellation,
+  malformed output refusal, reuse and video-only coexistence.
+- AVC and HEVC each pass actual finite qualification/planner/export, full output
+  validation, promotion/recovery, conflict preservation, forged proposal refusal,
+  confirmed cancellation and late-conflict retention.
+
+The final checks follow assessment of the initial 1/3 diagnostic and do not reset
+that budget. No implementation changed during them; subsequent edits only record
+evidence. Completed focused ownership review found no actionable defect within
+this slice, including PID/start-time identity, retained handle reachability,
+cleanup ordering, call-site migration and test teardown.
+
 ## Limits
 
 This closes the finite copy-verifier slice only. Scene/index/inspection adapters
