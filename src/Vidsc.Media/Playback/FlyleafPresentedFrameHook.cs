@@ -67,5 +67,5 @@ public static class FlyleafPresentedFrameHook
         + "DXGI present-ID observations: 140 visible CFR/fractional/VFR/HEVC/edit-list checks and 19 lifecycle "
         + "checks passed. Each read revalidates source, operation, swap-chain and confirmed present ID; "
         + "start/end require a matching complete source frame map, with independently verified EOF. "
-        + "Player.CurTime remains ADVISORY. Interval editing/export are not implemented in this prototype.";
+        + "Player.CurTime remains ADVISORY. Presented-frame evidence does not itself qualify an export.";
 }

@@ -412,7 +412,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public bool IsExactEditingEnabled => false;
 
     public string ExactEditingReason { get; } =
-        "Interval editing and export are not implemented in this playback prototype.";
+        "Exact frame interval editing is unavailable. Use Stream copy for verified export.";
 
     public string? SceneReason { get; }
 

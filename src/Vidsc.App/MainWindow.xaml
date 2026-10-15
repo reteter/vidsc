@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Vidsc.App.Controls"
         xmlns:fl="clr-namespace:FlyleafLib.Controls.WPF;assembly=FlyleafLib"
-        Title="vidsc - M1 playback prototype"
+        Title="vidsc"
         Height="820"
         Width="1280"
         MinHeight="520"
