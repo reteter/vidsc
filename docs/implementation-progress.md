@@ -77,7 +77,9 @@ existing/late conflicts and journal recovery. Confirmed failures discard only ow
 unvalidated files; stuck jobs retain source protection and the backend slot.
 Draft audio/track/chapter policies and a separate delayed AAC/AC-3 5.1 experiment
 preserve payloads/times and inspected pulse alignment, without claiming production
-priming/edge or sample-exact support. See the
+priming/edge or sample-exact support. A subsequent bounded diagnostic records output
+skip/decoded extents and rejects actual dropped audio packets; it refuses audible-edge
+qualification where the fixture lacks authored signal. See the
 [capability and evidence record](validation/2026-10-15-m3-backend.md).
 Generic EOF, wider/native multitrack/MKV and player gates remain open; M1 and #28
 were not resumed.

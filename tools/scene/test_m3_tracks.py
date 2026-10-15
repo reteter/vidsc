@@ -137,7 +137,7 @@ def select(source):
     return selected
 
 
-def remux(source, target, selected, shift_audio=False):
+def remux(source, target, selected, shift_audio=False, drop_first_audio=False):
     import av
     budget = inspection.Budget()
     with target.open("xb") as owned, av.open(str(source)) as incoming, av.open(owned, "w", format="mp4",
@@ -145,6 +145,9 @@ def remux(source, target, selected, shift_audio=False):
         targets = {}
         ordinals = {}
         wanted = {i: {p["ordinal"] for p in packets} for i, packets in selected.items()}
+        if drop_first_audio:
+            for stream in incoming.streams.audio:
+                wanted[stream.index].remove(min(wanted[stream.index]))
         for stream in incoming.streams:
             target_stream = outgoing.add_stream_from_template(stream)
             target_stream.time_base = stream.time_base
@@ -243,9 +246,9 @@ def peak(chunks, channel, expected, diagnostic):
     return best[1]
 
 
-def impulse_checks(source, output, audio_index, query_shift=Fraction(0)):
-    reference = decode_audio(source, audio_index)
-    copied = decode_audio(output, audio_index)
+def impulse_checks(source, output, audio_index, query_shift=Fraction(0), reference=None, copied=None):
+    reference = decode_audio(source, audio_index) if reference is None else reference
+    copied = decode_audio(output, audio_index) if copied is None else copied
     observations = []
     for channel in range(CHANNELS):
         for base in BASES:
@@ -261,6 +264,113 @@ def impulse_checks(source, output, audio_index, query_shift=Fraction(0)):
                 "relativeTiming": abs(actual_output - (actual_source - START)) <= Fraction(1, RATE)})
     require(len(observations) >= CHANNELS, "Insufficient per-channel impulse observations")
     return observations
+
+
+def edge_samples(chunks, start, end):
+    """Project native samples onto a fixed rational grid; never zero-fill missing evidence."""
+    import numpy as np
+    count = (end - start) * RATE
+    require(count.denominator == 1 and 0 < count <= RATE // 20, "Edge window sample budget")
+    values = np.zeros((CHANNELS, int(count)), dtype=np.float32)
+    coverage = np.zeros(int(count), dtype=np.uint16)
+    for frame_start, data in chunks:
+        position = (frame_start - start) * RATE
+        require(position.denominator == 1, "Decoded samples do not share the exact 48 kHz grid")
+        position = int(position)
+        low, high = max(0, position), min(int(count), position + data.shape[1])
+        if low < high:
+            values[:, low:high] = data[:, low - position:high - position]
+            coverage[low:high] += 1
+    return values, coverage
+
+
+def edge_checks(reference, copied, audio_index):
+    import numpy as np
+    results = []
+    for name, start, end in (("first50ms", START, START + Fraction(1, 20)),
+                             ("last50ms", END - Fraction(1, 20), END)):
+        expected, source_coverage = edge_samples(reference, start, end)
+        actual, output_coverage = edge_samples(copied, start - START, end - START)
+        source_known = bool(np.all(source_coverage == 1))
+        output_known = bool(np.all(output_coverage == 1))
+        # Nonzero source PCM exercises a decoded signal. No arbitrary amplitude
+        # floor turns codec noise into a claimed authored edge impulse.
+        signal_channels = [bool(np.any(expected[ch] != 0)) for ch in range(CHANNELS)]
+        result = {"edge": name, "sourceInterval": [start, end],
+            "sourceCoverageKnown": source_known, "outputCoverageKnown": output_known,
+            "missingOutputSamples": int(np.count_nonzero(output_coverage == 0)),
+            "overlappingOutputSamples": int(np.count_nonzero(output_coverage > 1)),
+            "nonzeroSourceChannels": signal_channels,
+            "authoredPulseExercised": [any(start <= base + Fraction(ch, 100) + OFFSETS[audio_index] < end
+                for base in BASES) for ch in range(CHANNELS)],
+            "pcmComparisonExercised": source_known and output_known,
+            "exactPcmDiagnosticPassed": False, "maxAbsoluteSampleDeviation": None,
+            "changedSamples": None}
+        if source_known and output_known:
+            difference = np.abs(expected.astype(np.float64) - actual.astype(np.float64))
+            result.update(exactPcmDiagnosticPassed=bool(np.array_equal(expected, actual)),
+                maxAbsoluteSampleDeviation=float(difference.max()),
+                maxPerChannelDeviation=[float(difference[ch].max()) for ch in range(CHANNELS)],
+                changedSamples=int(np.count_nonzero(expected != actual)))
+        result["status"] = ("unknown-source-evidence" if not source_known else
+            "rejected-missing-or-overlapping-output-coverage" if not output_known else
+            "decoder-warmup-or-reconstruction-difference" if not result["exactPcmDiagnosticPassed"] else
+            "exact-decoded-edge-diagnostic-pass")
+        results.append(result)
+    return results
+
+
+def edge_harness_preflight(reference):
+    import numpy as np
+    source, coverage = edge_samples(reference, START, START + Fraction(1, 20))
+    require(bool(np.all(coverage == 1)), "Fixture lacks independently timed first-edge source samples")
+    # Self-comparison has a known result; deleting one source sample must leave
+    # a grid hole rather than being silently filled with zero or nearest data.
+    projected = [(START, source)]
+    same, same_coverage = edge_samples(projected, START, START + Fraction(1, 20))
+    missing, missing_coverage = edge_samples([(START + Fraction(1, RATE), source[:, 1:])],
+        START, START + Fraction(1, 20))
+    require(np.array_equal(source, same) and bool(np.all(same_coverage == 1)), "Edge self-map harness failure")
+    require(missing_coverage[0] == 0 and np.count_nonzero(missing_coverage == 0) == 1,
+            "Edge missing-grid harness control unexercised")
+    return {"exactSelfMap": True, "singleMissingSampleRejected": True,
+            "nonzeroSourceChannels": [bool(np.any(source[ch] != 0)) for ch in range(CHANNELS)]}
+
+
+def priming_observation(source_stream, output_stream, selected_packets, decoded):
+    """Measure declared skip and actual extent separately; do not infer codec priming."""
+    require(bool(decoded), "Unknown fresh-decoded audio extent")
+    first = min(start for start, _ in decoded)
+    last = max(start + Fraction(data.shape[1], RATE) for start, data in decoded)
+    packets = output_stream["packets"]
+    require(bool(packets), "Unknown output audio packet extent")
+    packet_start = min(p["pts"] for p in packets)
+    packet_end = max(p["pts"] + p["duration"] for p in packets)
+    leading = (first - packet_start) * RATE
+    trailing = (packet_end - last) * RATE
+    require(leading.denominator == trailing.denominator == 1, "Unknown sub-sample decode trimming")
+    def skips(items):
+        result = []
+        for packet in items:
+            for data in packet["sideData"]:
+                if "skip" in data["type"].lower():
+                    require("skipStartSamples" in data and "skipEndSamples" in data,
+                            "Unknown skip side-data representation")
+                    result.append({"ordinal": packet["ordinal"], **data})
+        return result
+    source_skips, output_skips = skips(selected_packets), skips(packets)
+    declared_leading = sum(data["skipStartSamples"] for data in output_skips)
+    declared_trailing = sum(data["skipEndSamples"] for data in output_skips)
+    return {"sourceSelectedSkipDeclarations": source_skips, "outputSkipDeclarations": output_skips,
+        "skipObservationKnown": True, "absentSkipMeaning": "No demux packet declaration observed; not proof of zero codec priming",
+        "sourceDecoderDelay": source_stream["decoderDelay"], "outputDecoderDelay": output_stream["decoderDelay"],
+        "codecPrimingStatus": "unexercised; decoder delay is not inferred encoder priming",
+        "packetInterval": [packet_start, packet_end], "decodedInterval": [first, last],
+        "measuredLeadingDiscardSamples": int(leading), "measuredTrailingDiscardSamples": int(trailing),
+        "declaredLeadingSkipSamples": declared_leading, "declaredTrailingSkipSamples": declared_trailing,
+        "skipExplainsMeasuredExtent": int(leading) == declared_leading and int(trailing) == declared_trailing,
+        "selectedSourcePacketInterval": [min(p["pts"] for p in selected_packets),
+            max(p["pts"] + p["duration"] for p in selected_packets)]}
 
 
 def main():
@@ -290,26 +400,72 @@ def main():
     output, damaged = work / "copy.mp4", work / "shifted.mp4"
     remux(source, output, selected)
     size_check(work)
-    checks = packet_checks(original, manifest(output), selected)
+    output_manifest = manifest(output)
+    checks = packet_checks(original, output_manifest, selected)
     _, _, source_tb, _, source_frames = inspection.read_reference(source, 0, inspection.Budget())
     _, _, output_tb, _, output_frames = inspection.read_reference(output, 0, inspection.Budget())
     expected_frames = [frame for frame in source_frames if START <= frame["pts"] * source_tb < END]
     checks["videoFreshDecode"] = len(expected_frames) == len(output_frames) == 12 and all(
         a["pixelSha256"] == b["pixelSha256"] and a["pts"] * source_tb - START == b["pts"] * output_tb
         for a, b in zip(expected_frames, output_frames))
-    impulses = [impulse_checks(source, output, i) for i in range(2)]
+    impulses, edges, preflight, priming = [], [], [], []
+    for i in range(2):
+        reference, copied = decode_audio(source, i), decode_audio(output, i)
+        preflight.append(edge_harness_preflight(reference))
+        impulses.append(impulse_checks(source, output, i, reference=reference, copied=copied))
+        edges.append(edge_checks(reference, copied, i))
+        stream = original[i + 1]
+        priming.append(priming_observation(stream, output_manifest[i + 1], selected[stream["id"]], copied))
+        del reference, copied
     checks["authoredImpulses"] = all(p["authoredTiming"] for track in impulses for p in track)
     checks["relativeImpulseTiming"] = all(p["relativeTiming"] for track in impulses for p in track)
     remux(source, damaged, selected, shift_audio=True)
     negative = packet_checks(original, manifest(damaged), selected)
     negative_impulses = [impulse_checks(source, damaged, i, Fraction(1, 10)) for i in range(2)]
     rejected = not all(negative.values()) and not all(p["relativeTiming"] for track in negative_impulses for p in track)
+    edge_damaged = work / "missing-first-audio-packet.mp4"
+    remux(source, edge_damaged, selected, drop_first_audio=True)
+    size_check(work)
+    damaged_edges = []
+    for i in range(2):
+        reference, copied = decode_audio(source, i), decode_audio(edge_damaged, i)
+        damaged_edges.append(edge_checks(reference, copied, i))
+        del reference, copied
+    # The baseline may already differ in PCM, so only newly missing coverage
+    # on both first edges proves this dropped-packet control was exercised.
+    baseline_coverage_known = all(edge["sourceCoverageKnown"] and edge["outputCoverageKnown"]
+        for track in edges for edge in track)
+    damaged_coverage_rejected = baseline_coverage_known and all(track[0]["sourceCoverageKnown"]
+        and not track[0]["outputCoverageKnown"] and track[0]["missingOutputSamples"] > 0
+        and track[0]["overlappingOutputSamples"] == 0 for track in damaged_edges)
+    damaged_pcm_rejected = any(edge["pcmComparisonExercised"] and not edge["exactPcmDiagnosticPassed"]
+        for track in damaged_edges for edge in track)
+    edge_candidate_qualified = all(edge["sourceCoverageKnown"] and edge["outputCoverageKnown"]
+        and edge["exactPcmDiagnosticPassed"] and all(edge["authoredPulseExercised"])
+        for track in edges for edge in track) and all(p["skipExplainsMeasuredExtent"] for p in priming)
     report = {"scope": "synthetic native experiment only; not production or sample-exact audio",
         "native": {"pyav": __import__("av").__version__, "libraries": __import__("av").library_versions},
         "requested": [frac(START), frac(END)], "commonEpoch": frac(START), "commonShift": frac(Fraction(0)),
         "candidatePreroll": {"ordinals": [], "provenance": "Explicit no-preroll candidate tested by fresh source/output impulse decode; no codec-wide conclusion"},
         "primingPolicy": "Decoder delay and raw packet skip metadata recorded separately; no inferred audible preroll",
         "checks": checks, "shiftNegativeRejected": rejected, "impulses": impulses,
+        "edgeHarnessPreflight": preflight,
+        "outputPrimingAndSkipObservations": priming,
+        "edgeDiagnostic": {"status": "qualified-fixture-diagnostic-only" if edge_candidate_qualified else "refused-candidate",
+            "acceptancePolicy": "Exact PCM is a diagnostic candidate, not the copied-audio M3 contract; no tolerance introduced",
+            "edges": edges,
+            "maxAbsoluteSampleDeviation": max((edge["maxAbsoluteSampleDeviation"] for track in edges for edge in track
+                if edge["maxAbsoluteSampleDeviation"] is not None), default=None),
+            "codecPrimingControl": "unexercised; no codec-wide priming proof",
+            "audibleEdgeControl": "exercised" if all(all(edge["authoredPulseExercised"])
+                for track in edges for edge in track) else "unexercised-for-some-edges; silence/noise cannot certify audible boundary behavior",
+            "actualDroppedFirstPacketControl": {"prepared": True, "edges": damaged_edges,
+                "droppedSourcePackets": [{"streamId": stream["id"],
+                    "ordinal": selected[stream["id"]][0]["ordinal"],
+                    "payloadSha256": selected[stream["id"]][0]["payload"]}
+                    for stream in original if stream["kind"] == "audio"],
+                "coverageRejected": damaged_coverage_rejected, "pcmRejected": damaged_pcm_rejected,
+                "status": "exercised-rejected" if damaged_coverage_rejected else "unexercised-not-rejected"}},
         "tracks": [{"source": stream, "selected": selected[stream["id"]],
             "intendedAudible": [START, END],
             "leadingExtension": max(Fraction(0), START - min(p["pts"] for p in selected[stream["id"]])),
@@ -325,7 +481,11 @@ def main():
     size_check(work)
     require(digest(video) == source_hash, "Read-only fixture changed")
     require(all(checks.values()) and rejected, "Native track proof failed; inspect owned report")
-    print(json.dumps({"checks": checks, "shiftNegativeRejected": rejected}))
+    require(damaged_coverage_rejected,
+            "Dropped audio packet control was not rejected; inspect owned report")
+    print(json.dumps({"checks": checks, "shiftNegativeRejected": rejected,
+        "edgeDiagnostic": report["edgeDiagnostic"]["status"],
+        "droppedAudioPacketRejected": damaged_coverage_rejected}))
 
 
 if __name__ == "__main__":
