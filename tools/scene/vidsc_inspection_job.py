@@ -125,7 +125,19 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def source_digest(path):
+def source_digest(path, streaming=False, budget=None):
+    if streaming:
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                if budget is not None:
+                    budget.check()
+                size += len(chunk)
+                digest.update(chunk)
+        if size == 0:
+            raise ValueError("Source must be nonempty")
+        return digest.hexdigest()
     with path.open("rb") as source:
         data = source.read(MAX_BYTES + 1)
     if not 0 < len(data) <= MAX_BYTES:

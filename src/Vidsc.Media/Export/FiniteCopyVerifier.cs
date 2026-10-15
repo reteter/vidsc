@@ -13,7 +13,8 @@ using Vidsc.Media.Tooling;
 namespace Vidsc.Media.Export;
 
 public sealed record FiniteCopyRequest(ProgressiveSourceIdentity Source, string CodecName,
-    int FirstPacket, int LastPacket, long StartPts, long EndPts);
+    int FirstPacket, int LastPacket, long StartPts, long EndPts, bool SourceWindow = false,
+    TerminalEndQualification? TerminalEnd = null);
 
 /// <summary>Issued only after a guarded native finite decode; transparent observations cannot mint this capability.</summary>
 public sealed class QualifiedCopyRange
@@ -61,11 +62,10 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
         catch (NavigationProcessStuckException exception)
         {
             // The shared owner roots this verifier and its guards until the child exits.
-            lease.Retain(active, exception.ProcessId, () =>
+            throw lease.Retain(active, exception, () =>
             {
                 if (!ReleaseStuckGuards(jobId)) throw new InvalidOperationException("Finite invocation is still retained.");
             });
-            throw;
         }
     }
 
@@ -113,6 +113,10 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
         CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted)
     {
         ValidateRequest(request); Require(jobId != Guid.Empty && !stuckGuards.ContainsKey(jobId), "Invalid or unreconciled job identity.");
+        var requestedCancellation = cancellationToken;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(40));
+        cancellationToken = deadline.Token;
         var guards = new List<FileStream>(); bool retained = false;
         ToolProcessIdentity? activeProcess = null;
         void Started(ToolProcessIdentity identity) { activeProcess = identity; processStarted?.Invoke(identity); }
@@ -122,13 +126,15 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             var source = Open(path);
             var driver = Open(driverPath);
             var inspection = Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_inspection_job.py"));
-            Require(source.Length is > 0 and <= 16 * 1024 * 1024 && driver.Length <= MaxReport && inspection.Length <= MaxReport, "Input budget exceeded.");
+            Require(source.Length > 0 && (request.SourceWindow || source.Length <= 16 * 1024 * 1024)
+                && driver.Length <= MaxReport && inspection.Length <= MaxReport, "Input budget exceeded.");
             Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId, "Source identity changed.");
             _ = Open(pythonPath);
             string nativeDirectory = Path.Combine(Path.GetDirectoryName(pythonPath)!, "Lib", "site-packages", "av.libs");
             var nativeHashes = Directory.GetFiles(nativeDirectory, "*.dll").ToDictionary(p => Path.GetFileName(p), p => Digest(Open(p)), StringComparer.Ordinal);
             Require(nativeHashes.Count > 0, "Missing native runtime.");
-            string sourceHash = Digest(source), driverHash = Digest(driver), inspectionHash = Digest(inspection);
+            string sourceHash = await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false);
+            string driverHash = Digest(driver), inspectionHash = Digest(inspection);
             var output = outputPath is null ? null : Open(outputPath);
             Require(output is null || output.Length is > 0 and <= 16 * 1024 * 1024, "Output budget exceeded.");
             string? outputHash = output is null ? null : Digest(output);
@@ -138,6 +144,8 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
                 ("first-packet", request.FirstPacket), ("last-packet", request.LastPacket), ("start-pts", request.StartPts), ("end-pts", request.EndPts) })
                 args.AddRange(["--" + pair.Item1, pair.Item2.ToString(CultureInfo.InvariantCulture)]);
             if (outputPath is not null) args.AddRange(["--output-media", Path.GetFullPath(outputPath)]);
+            if (request.SourceWindow) args.Add("--source-window");
+            if (request.TerminalEnd is not null) args.AddRange(["--terminal-end-pts", request.EndPts.ToString(CultureInfo.InvariantCulture)]);
             var process = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(40), cancellationToken, Started, MaxReport).ConfigureAwait(false);
             if (process.Started && !process.ExitConfirmed)
             {
@@ -148,7 +156,8 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             cancellationToken.ThrowIfCancellationRequested();
             Require(process.Succeeded && process.ExitConfirmed && !process.StandardError.Contains("[output truncated by vidsc]", StringComparison.Ordinal) &&
                 !process.StandardError.Contains("[output capture failed]", StringComparison.Ordinal), "Finite verifier process failed or report is incomplete.");
-            Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId && Digest(source) == sourceHash, "Source changed during verification.");
+            Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId &&
+                await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false) == sourceHash, "Source changed during verification.");
             if (output is not null) Require(Digest(output) == outputHash, "Output changed during verification.");
             var report = ParseReport(process.StandardOutput, request, jobId, sourceHash, driverHash, inspectionHash, outputHash);
             using var parsed = JsonDocument.Parse(process.StandardOutput);
@@ -157,6 +166,10 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             foreach (var native in nativeHashes)
                 Require(Hash(reported, native.Key) == native.Value, "Native verifier file hash differs.");
             return report;
+        }
+        catch (OperationCanceledException exception) when (!requestedCancellation.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("Finite verification exceeded its 40-second invocation budget.", exception);
         }
         finally
         {
@@ -187,20 +200,30 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
         Require(natives.Length > 0 && natives.All(p => p.Name == Path.GetFileName(p.Name) && p.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && IsHash(p.Value.GetString())), "Invalid native build identity.");
         string buildId = Hash(build, "buildSha256");
         Require(buildId == Sha(Canonical(build, true)), "Verifier build hash differs.");
+        int ordinalBase = request.SourceWindow ? request.FirstPacket : 0;
+        if (request.SourceWindow)
+            Require(N(root, "referencePacketOrdinalBase") == ordinalBase && S(root, "sourcePolicy") == "prefix-context-range-window-v1", "Source window policy differs.");
         var packets = Rows(root, "referencePackets", 1024); var selected = Rows(root, "selectedPackets", 1024);
-        Require(packets.Length > request.LastPacket && selected.Length == request.LastPacket - request.FirstPacket + 1, "Incomplete finite manifest.");
-        for (int i = 0; i < packets.Length; i++) Packet(packets[i], i, tb, request.CodecName);
+        Require(packets.Length > request.LastPacket - ordinalBase && selected.Length == request.LastPacket - request.FirstPacket + 1, "Incomplete finite manifest.");
+        for (int i = 0; i < packets.Length; i++) Packet(packets[i], checked(i + ordinalBase), tb, request.CodecName);
         for (int i = 1; i < packets.Length; i++) Require(N(packets[i], "dts") > N(packets[i - 1], "dts"), "Source decode order differs.");
         Require(packets.Sum(p => N(p, "size")) <= 16 * 1024 * 1024, "Packet byte budget exceeded.");
         var reread = Rows(root, "rereadPackets", 1024); Require(reread.Length == packets.Length, "Incomplete source reread.");
         for (int i = 0; i < packets.Length; i++) Require(Equal(packets[i], reread[i], PacketFields), "Source reread differs.");
-        for (int i = 0; i < selected.Length; i++) Require(Equal(selected[i], packets[request.FirstPacket + i], PacketFields), "Selected packet differs.");
+        for (int i = 0; i < selected.Length; i++) Require(Equal(selected[i], packets[request.FirstPacket - ordinalBase + i], PacketFields), "Selected packet differs.");
         var nal = selected[0].GetProperty("nalTypes").EnumerateArray().Select(n => n.GetInt32());
         Require(N(selected[0], "pts") == request.StartPts && nal.Any(n => request.CodecName == "h264" ? n == 5 : n is 19 or 20 or 21), "Unrecognized finite start.");
         var frames = Rows(root, "referenceFrames", 512); var fresh = Rows(root, "freshFrames", 512);
         Frames(frames, tb); Frames(fresh, tb);
         Require(Seconds(checked(N(frames[^1], "pts") - N(frames[0], "pts")), tb) <= Rational.FromInt64(30), "Media span exceeds budget.");
-        Require(frames.Any(f => N(f, "pts") == request.StartPts) && frames.Any(f => N(f, "pts") == request.EndPts), "Boundary has no actual source successor.");
+        bool hasSuccessor = frames.Any(f => N(f, "pts") == request.EndPts);
+        bool terminalQualified = !request.SourceWindow && request.TerminalEnd is { } terminal
+            && terminal.EndPts == request.EndPts && terminal.Matches(request.Source,
+                new NavigationMap(tb, request.Source.TimelineOriginTicks, frames.Select(f => N(f, "pts")), [], terminalEndPts: request.EndPts));
+        Require(frames.Any(f => N(f, "pts") == request.StartPts) && (hasSuccessor || terminalQualified), "Boundary has no actual source successor or independent terminal qualification.");
+        if (!hasSuccessor)
+            Require(root.GetProperty("finalDuration").GetProperty("independentlyQualifiedEof").GetBoolean()
+                && checked(N(frames[^1], "pts") + N(frames[^1], "duration")) == request.EndPts, "Source terminal duration differs from independent qualification.");
         var expected = frames.Where(f => N(f, "pts") >= request.StartPts && N(f, "pts") < request.EndPts).ToArray();
         var retained = fresh.Where(f => N(f, "pts") >= request.StartPts).ToArray();
         Require(root.GetProperty("errors").GetArrayLength() == 0 && fresh.All(f => N(f, "pts") < request.EndPts), "Finite decode errors or post-end frames.");
@@ -234,6 +257,8 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             }
             long end = checked(N(outFrames[^1], "pts") + N(outFrames[^1], "duration"));
             Require(Seconds(end, outTb) == Seconds(checked(request.EndPts - request.StartPts), tb), "Output terminal end differs.");
+            if (root.TryGetProperty("outputStreamDurationPts", out var declaredDuration) && declaredDuration.ValueKind != JsonValueKind.Null)
+                Require(Seconds(declaredDuration.GetInt64(), outTb) == Seconds(end, outTb), "Declared output video duration differs from decoded presentation end.");
             validated = new(outputHash.ToUpperInvariant(), end, outTb);
         }
         long? containerStart = root.GetProperty("sourceContainerStartUs").ValueKind == JsonValueKind.Null ? null : N(root, "sourceContainerStartUs");
@@ -242,7 +267,9 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
 
     private static void ValidateRequest(FiniteCopyRequest r) => Require(r.Source.TimeBase.IsPositive && r.Source.Generation >= 0 &&
         r.Source.StreamIndex >= 0 && !string.IsNullOrWhiteSpace(r.Source.SourceId) && r.Source.SourceId.Length <= 256 &&
-        r.CodecName is "h264" or "hevc" && r.FirstPacket >= 0 && r.LastPacket >= r.FirstPacket && r.LastPacket < 1024 && r.StartPts < r.EndPts, "Invalid finite request.");
+        r.CodecName is "h264" or "hevc" && r.FirstPacket >= 0 && r.LastPacket >= r.FirstPacket
+        && r.LastPacket - r.FirstPacket < 1024 && r.LastPacket < (r.SourceWindow ? 10_000_000 : 1024) && r.StartPts < r.EndPts
+        && (r.TerminalEnd is null || !r.SourceWindow && r.TerminalEnd.Source == r.Source && r.TerminalEnd.EndPts == r.EndPts), "Invalid finite request.");
     private static void Packet(JsonElement p, int sequence, Rational tb, string codec)
     {
         Require(N(p, "sequence") == sequence && TB(p) == tb && N(p, "duration") > 0 && N(p, "size") is > 0 and <= 16 * 1024 * 1024, "Invalid packet.");
@@ -267,7 +294,8 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
     private static readonly string[] PacketFields = ["sequence", "pts", "dts", "duration", "timeBase", "payloadSha256", "size", "nalTypes"];
     private static readonly string[] FrameFields = ["pts", "duration", "timeBase", "pixelFormat", "width", "height", "planeSha256", "pixelSha256"];
     private static bool Equal(JsonElement a, JsonElement b, params string[] fields) => fields.All(k => Canonical(a.GetProperty(k)) == Canonical(b.GetProperty(k)));
-    private static FileStream Guard(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+    private static FileStream Guard(string path) => new(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+        64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
     private static string Digest(FileStream stream) { stream.Position = 0; return Convert.ToHexString(SHA256.HashData(stream)); }
     private static Rational Seconds(long value, Rational tb) => Rational.FromInt64(value) * tb;
     private static JsonElement[] Rows(JsonElement parent, string key, int max) { var rows = parent.GetProperty(key); Require(rows.GetArrayLength() <= max, "Traversal budget exceeded."); return rows.EnumerateArray().ToArray(); }

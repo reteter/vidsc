@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Vidsc.Core.Time;
+using Vidsc.Core.Navigation;
 using Vidsc.Media.Export;
 using Xunit;
 
@@ -54,6 +55,38 @@ public sealed class FiniteCopyVerifierTests
     {
         Assert.ThrowsAny<JsonException>(() => FiniteCopyVerifier.ParseReport("{", Request, Job, H, H, H));
         Assert.Throws<InvalidOperationException>(() => FiniteCopyVerifier.ParseReport(new string(' ', 2 * 1024 * 1024 + 1), Request, Job, H, H, H));
+    }
+
+    [Fact]
+    public void EofRequiresIndependentSourceScheduleAndNativeCompleteMap()
+    {
+        var report = Report();
+        report["referenceFrames"]!.AsArray().RemoveAt(2);
+        report["referencePackets"]!.AsArray().RemoveAt(2);
+        report["rereadPackets"]!.AsArray().RemoveAt(2);
+        report["finalDuration"] = new JsonObject { ["independentlyQualifiedEof"] = true };
+        Assert.Throws<InvalidOperationException>(() => Parse(report));
+        var map = new NavigationMap(Request.Source.TimeBase, 0, [0, 10], [], terminalEndPts: 20);
+        var independent = new IndependentTerminalReference(Request.Source, "authored-cfr-v1", "Authored source schedule before export", [0, 10], 20);
+        Assert.True(TerminalEndQualification.TryQualify(Request.Source, map, independent, out var terminal, out _));
+        var request = Request with { TerminalEnd = terminal };
+        _ = FiniteCopyVerifier.ParseReport(report.ToJsonString(), request, Job, H, H, H);
+        report["referenceFrames"]![1]!["duration"] = 9;
+        Assert.Throws<InvalidOperationException>(() => FiniteCopyVerifier.ParseReport(report.ToJsonString(), request, Job, H, H, H));
+    }
+
+    [Fact]
+    public void WindowPacketOrdinalsCannotBeRebasedByTheReport()
+    {
+        var report = Report();
+        report["firstPacket"] = 1250; report["lastPacket"] = 1251;
+        report["referencePacketOrdinalBase"] = 1250; report["sourcePolicy"] = "prefix-context-range-window-v1";
+        foreach (string key in new[] { "referencePackets", "rereadPackets", "selectedPackets" })
+            foreach (var packet in report[key]!.AsArray()) packet!["sequence"] = packet["sequence"]!.GetValue<int>() + 1250;
+        var request = Request with { FirstPacket = 1250, LastPacket = 1251, SourceWindow = true };
+        _ = FiniteCopyVerifier.ParseReport(report.ToJsonString(), request, Job, H, H, H);
+        report["referencePacketOrdinalBase"] = 0;
+        Assert.Throws<InvalidOperationException>(() => FiniteCopyVerifier.ParseReport(report.ToJsonString(), request, Job, H, H, H));
     }
 
     [Fact]

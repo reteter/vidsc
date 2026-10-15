@@ -59,21 +59,89 @@ def packet_checks(expected, actual, source_tb, actual_tb, epoch):
             for a, b in zip(expected, actual) for key in ("pts", "dts", "duration")))
 
 
-def qualify(args, result):
+def read_source_window(path, args, budget):
+    """Decode context from the beginning, retaining only the requested finite range and successor.
+
+    The prefix is traversed rather than seek-guessed. Wall time bounds the traversal;
+    only selected packet bytes and target frame hashes count against memory/report limits.
+    """
+    import av
+    packets, frames = [], []
+    size = 0
+    with av.open(str(path)) as container:
+        stream = container.streams[args.stream]
+        ctx = stream.codec_context
+        codec, extra, tb = ctx.name, bytes(ctx.extradata or b""), stream.time_base
+        require(stream.type == "video" and codec == args.codec and extra and tb is not None, "InvalidWindowStream")
+        inspection.validate_configuration(codec, extra)
+        inspection.configure_decoder(ctx)
+        ordinal, previous_pts, successor = 0, None, False
+        for packet in container.demux(stream):
+            budget.check()
+            if packet.size:
+                require(ordinal < 10_000_000 and ctx.extradata == extra, "SourceTraversalOrConfigurationChanged")
+                if args.first_packet <= ordinal <= args.last_packet:
+                    row, _ = inspection.packet_record(packet, ordinal, codec, extra, tb)
+                    size += packet.size
+                    require(size <= inspection.MAX_BYTES and len(packets) < inspection.MAX_PACKETS, "WindowPacketBudgetExceeded")
+                    packets.append(row)
+                ordinal += 1
+            for frame in packet.decode():
+                budget.check()
+                require(frame.pts is not None and not frame.is_corrupt and not getattr(frame, "decode_error_flags", 0), "CorruptSourceContext")
+                require(previous_pts is None or frame.pts > previous_pts, "UnorderedSourceContext")
+                previous_pts = frame.pts
+                if args.start_pts <= frame.pts <= args.end_pts:
+                    require(len(frames) < inspection.MAX_FRAMES, "WindowFrameBudgetExceeded")
+                    frames.append(inspection.frame_record(frame, tb))
+                    successor = frame.pts == args.end_pts
+            if successor and ordinal > args.last_packet:
+                break
+    require(successor and packets and len(packets) == args.last_packet - args.first_packet + 1,
+        "IncompleteSourceWindow")
+    return codec, extra, tb, packets, frames
+
+
+def reread_source_window(path, args, codec, extra, tb, budget):
+    import av
+    rows, size = [], 0
+    with av.open(str(path)) as container:
+        stream = container.streams[args.stream]
+        require(stream.codec_context.name == codec and stream.codec_context.extradata == extra, "WindowConfigurationChanged")
+        ordinal = 0
+        for packet in container.demux(stream):
+            budget.check()
+            if not packet.size:
+                continue
+            if args.first_packet <= ordinal <= args.last_packet:
+                record, data = inspection.packet_record(packet, ordinal, codec, extra, tb)
+                size += len(data)
+                require(size <= inspection.MAX_BYTES and len(rows) < inspection.MAX_PACKETS, "WindowRereadBudgetExceeded")
+                rows.append((record, data))
+            ordinal += 1
+            if ordinal > args.last_packet:
+                break
+    return rows
+
+
+def qualify(args, result, matroska_subtitles=None):
     import av
     budget = inspection.Budget()
     require(str(uuid.UUID(args.job_id)) == args.job_id.lower(), "InvalidJobIdentity")
     require(bool(args.source_id) and len(args.source_id) <= 256 and args.generation >= 0,
         "InvalidSourceIdentity")
-    require(args.stream >= 0 and 0 <= args.first_packet <= args.last_packet < inspection.MAX_PACKETS,
+    window = getattr(args, "source_window", False)
+    require(args.stream >= 0 and 0 <= args.first_packet <= args.last_packet < (10_000_000 if window else inspection.MAX_PACKETS)
+        and args.last_packet - args.first_packet < inspection.MAX_PACKETS,
         "InvalidPacketRange")
     require(args.start_pts < args.end_pts, "InvalidFrameRange")
     source = Path(args.input)
-    source_hash = inspection.source_digest(source)
+    source_hash = inspection.source_digest(source, streaming=window, budget=budget)
     result["sourceSha256"] = source_hash
     with av.open(str(source)) as container:
         result["sourceContainerStartUs"] = container.start_time
-    codec, extra, tb, packets, frames = inspection.read_reference(source, args.stream, budget)
+    codec, extra, tb, packets, frames = read_source_window(source, args, budget) if window else inspection.read_reference(source, args.stream, budget)
+    base = args.first_packet if window else 0
     require(codec == args.codec, "CodecMismatch")
     # RADL is outside this first route even if a particular decoder conceals it.
     require(codec != "hevc" or not any(set(p["nalTypes"]) & {6, 7} for p in packets),
@@ -82,22 +150,24 @@ def qualify(args, result):
     require(all(b["dts"] > a["dts"] for a, b in zip(packets, packets[1:])),
         "InvalidDecodeOrder")
     pts = [frame["pts"] for frame in frames]
-    require(args.start_pts in pts and args.end_pts in pts, "UnverifiedFrameBoundary")
+    terminal = (not window and getattr(args, "terminal_end_pts", None) == args.end_pts
+        and frames[-1]["duration"] > 0 and frames[-1]["pts"] + frames[-1]["duration"] == args.end_pts)
+    require(args.start_pts in pts and (args.end_pts in pts or terminal), "UnverifiedFrameBoundary")
     selected = [frame for frame in frames if args.start_pts <= frame["pts"] < args.end_pts]
     require(bool(selected) and selected[-1]["duration"] > 0 and
         selected[-1]["pts"] + selected[-1]["duration"] == args.end_pts,
         "UnverifiedTerminalEnd")
     require(all(a["duration"] > 0 and a["pts"] + a["duration"] == b["pts"]
         for a, b in zip(frames, frames[1:])), "AmbiguousFrameDuration")
-    require(args.last_packet < len(packets), "PacketRangeOutsideSource")
-    manifest = packets[args.first_packet:args.last_packet + 1]
+    require(args.last_packet - base < len(packets), "PacketRangeOutsideSource")
+    manifest = packets[args.first_packet - base:args.last_packet - base + 1]
     first = manifest[0]
     rap = {5} if codec == "h264" else {19, 20, 21}
     require(first["pts"] == args.start_pts and bool(set(first["nalTypes"]) & rap),
         "UnrecognizedStart")
-    reread = inspection.read_packets(source, args.stream, codec, extra, tb, budget)
+    reread = reread_source_window(source, args, codec, extra, tb, budget) if window else inspection.read_packets(source, args.stream, codec, extra, tb, budget)
     require([record for record, _ in reread] == packets, "SourceRereadMismatch")
-    finite = reread[args.first_packet:args.last_packet + 1]
+    finite = reread[args.first_packet - base:args.last_packet - base + 1]
     declared = tuple(selected[0][key] for key in ("width", "height", "pixelFormat"))
     fresh, errors = inspection.decode_fresh(codec, extra, tb, finite, budget, declared)
     retained = [frame for frame in fresh if args.start_pts <= frame["pts"] < args.end_pts]
@@ -113,12 +183,13 @@ def qualify(args, result):
         terminalEnd=bool(retained) and retained[-1]["duration"] > 0 and
             retained[-1]["pts"] + retained[-1]["duration"] == args.end_pts)
     result.update(timeBase=inspection.rational(tb), codecConfigurationSha256=inspection.sha(extra),
+        referencePacketOrdinalBase=base, sourcePolicy="prefix-context-range-window-v1" if window else "full-bounded-source-v1",
         referencePackets=packets, referenceFrames=frames,
         rereadPackets=[record for record, _ in reread], selectedPackets=manifest,
         freshFrames=fresh, errors=errors, checks=checks,
-        assurance="full-bounded-finite-source-reconstruction; video-only",
+        assurance="full-output; prefix-decoded-source-window" if window else "full-bounded-finite-source-reconstruction; video-only",
         outputValidated=False, arbitrarySourceSafety=False,
-        finalDuration=dict(independentlyQualifiedEof=False, basis="observed-source-successor-boundary"),
+        finalDuration=dict(independentlyQualifiedEof=terminal, basis="external-source-reference-native-full-scan" if terminal else "observed-source-successor-boundary"),
         configurationPolicy="immutable-length-prefixed-container; no-inband-or-side-data; no-RADL",
         limits=dict(sourceBytes=inspection.MAX_BYTES, packets=inspection.MAX_PACKETS,
             frames=inspection.MAX_FRAMES, wallSeconds=inspection.MAX_SECONDS,
@@ -129,8 +200,14 @@ def qualify(args, result):
         require(output.resolve() != source.resolve(), "OutputAliasesSource")
         output_hash = inspection.source_digest(output)
         with av.open(str(output)) as container:
-            require("mp4" in container.format.name.split(",") and len(container.streams) == 1 and
-                container.streams[0].type == "video", "UnsupportedOutputContainerOrTracks")
+            output_declared_duration = container.streams[0].duration
+            if matroska_subtitles is None:
+                require("mp4" in container.format.name.split(",") and len(container.streams) == 1 and
+                    container.streams[0].type == "video", "UnsupportedOutputContainerOrTracks")
+            else:
+                require(container.format.name == "matroska,webm" and len(container.streams) == 1 + matroska_subtitles
+                    and container.streams[0].type == "video" and all(s.type == "subtitle" for s in list(container.streams)[1:]),
+                    "UnsupportedOutputContainerOrTracks")
         out_codec, out_extra, out_tb, out_packets, out_frames = inspection.read_reference(output, 0, budget)
         checks.update(packet_checks(manifest, out_packets, tb, out_tb, args.start_pts))
         checks.update(outputConfiguration=codec == out_codec and extra == out_extra,
@@ -142,13 +219,16 @@ def qualify(args, result):
             outputTerminalEnd=bool(out_frames) and out_frames[-1]["duration"] > 0 and
                 (out_frames[-1]["pts"] + out_frames[-1]["duration"]) * out_tb ==
                 (args.end_pts - args.start_pts) * tb,
+            outputDeclaredVideoDuration=output_declared_duration is None or output_declared_duration * out_tb ==
+                (args.end_pts - args.start_pts) * tb,
             outputStable=inspection.source_digest(output) == output_hash)
         result.update(outputPackets=out_packets, outputFrames=out_frames,
             outputTimeBase=inspection.rational(out_tb), outputConfigurationSha256=inspection.sha(out_extra),
+            outputStreamDurationPts=output_declared_duration,
             outputSha256=output_hash, commonShift=inspection.rational(tb * 0))
         require(all(checks.values()), "ActualOutputRejected")
         result["outputValidated"] = True
-    checks["sourceStable"] = inspection.source_digest(source) == source_hash
+    checks["sourceStable"] = inspection.source_digest(source, streaming=window, budget=budget) == source_hash
     result["build"] = native_identity(budget)
     budget.check()
     require(all(checks.values()), "SourceChanged")
@@ -163,10 +243,12 @@ def parser():
         command.add_argument("--" + flag, type=int, required=True)
     command.add_argument("--codec", choices=("h264", "hevc"), required=True)
     command.add_argument("--output-media")
+    command.add_argument("--source-window", action="store_true")
+    command.add_argument("--terminal-end-pts", type=int)
     return command
 
 
-def execute(args):
+def execute(args, matroska_subtitles=None):
     import av
     result = dict(schemaVersion=1, jobId=args.job_id, sourceIdentity=args.source_id,
         generation=args.generation, streamIndex=args.stream, codec=args.codec,
@@ -175,7 +257,7 @@ def execute(args):
     try:
         # Retain only an error latch; native messages can contain private source paths.
         with inspection.NativeDecoderLogGate() as logs:
-            qualify(args, result)
+            qualify(args, result, matroska_subtitles)
         require(not logs.failed, "NativeDecoderError")
         result["success"] = bool(result.get("checks")) and all(result["checks"].values())
     except Exception as exc:

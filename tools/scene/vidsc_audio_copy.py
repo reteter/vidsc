@@ -1,4 +1,4 @@
-"""Bounded native AAC packet-copy evidence. No resampling or PCM tolerance."""
+"""Bounded native AAC/AC-3 packet-copy evidence. No resampling or PCM tolerance."""
 from __future__ import annotations
 
 from fractions import Fraction
@@ -12,8 +12,8 @@ import sys
 import vidsc_copy_job as video
 import vidsc_inspection_job as inspection
 
-POLICY = "aac48k51-exact-intersection-v1"
-PREROLL = "intersection-only; exact-full-source-context-test"
+POLICY = "aac-ac3-48k51-observed-preroll-v3"
+PREROLL = "observed-initial-padding; exact-source-context-test"
 RATE = 48000
 
 
@@ -55,12 +55,12 @@ def build_identity(budget):
 
 def configuration(stream):
     ctx = stream.codec_context
-    require(stream.type == "audio" and ctx.name == "aac", "UnsupportedAudioContextPolicy")
-    require(ctx.sample_rate == RATE and ctx.layout.name == "5.1" and len(ctx.layout.channels) == 6,
+    require(stream.type == "audio" and ctx.name in ("aac", "ac3"), "UnsupportedAudioContextPolicy")
+    require(ctx.sample_rate == RATE and ctx.layout.name == ("5.1" if ctx.name == "aac" else "5.1(side)") and len(ctx.layout.channels) == 6,
         "UnsupportedAudioRepresentation")
     require(ctx.format is not None and ctx.format.name == "fltp", "UnsupportedAudioRepresentation")
     extra = bytes(ctx.extradata or b"")
-    require(0 < len(extra) <= 1024 * 1024 and stream.time_base is not None, "MissingAudioConfiguration")
+    require((ctx.name == "ac3" or len(extra) > 0) and len(extra) <= 1024 * 1024 and stream.time_base is not None, "MissingAudioConfiguration")
     return extra, stream.time_base
 
 
@@ -81,7 +81,9 @@ def packet_record(packet, sequence, tb):
 
 class Projection:
     """Keep only the common interval, with a hard allocation bound and no gap fill."""
-    def __init__(self, start, end):
+    def __init__(self, start, end, layout="5.1", source_window=False):
+        self.layout = layout
+        self.source_window = source_window
         self.start, self.end = integer(start * RATE), integer(end * RATE)
         count = self.end - self.start
         require(0 < count and count * 24 + 6 * 4096 * 4 + 4096 <= inspection.MAX_BYTES,
@@ -90,23 +92,28 @@ class Projection:
         self.cursor = self.start
         self.frames = []
 
-    def collect(self, frame, fallback, budget):
+    def collect(self, frame, fallback, budget, presentation_skip_samples=0):
         budget.check()
         require(not frame.is_corrupt and not getattr(frame, "decode_error_flags", 0), "CorruptAudioFrame")
         require(frame.pts is not None and frame.sample_rate == RATE and frame.format.name == "fltp"
-            and frame.layout.name == "5.1" and len(frame.layout.channels) == 6
+            and frame.layout.name == self.layout and len(frame.layout.channels) == 6
             and 0 < frame.samples <= 4096 and len(frame.planes) == 6, "UnsupportedAudioFrame")
         require(len(self.frames) < inspection.MAX_FRAMES and sum(p.buffer_size for p in frame.planes) <= 6 * 4096 * 4,
             "AudioFrameBudgetExceeded")
         tb = frame.time_base or fallback
-        first = integer(frame.pts * tb * RATE)
+        presentation_pts = frame.pts + integer(Fraction(presentation_skip_samples, RATE) / tb)
+        first = integer(presentation_pts * tb * RATE)
         last = first + frame.samples
+        if self.source_window and (last <= self.start or first >= self.end):
+            return
         if self.frames:
             previous = self.frames[-1]
             require(integer(previous["pts"] * fraction(previous["timeBase"]) * RATE) + previous["samples"] == first,
                 "AudioDecodeGapOrOverlap")
-        self.frames.append(dict(pts=frame.pts, timeBase=inspection.rational(tb), samples=frame.samples,
-            sampleRate=RATE, channels=6, layout="5.1", sampleFormat="fltp"))
+        self.frames.append(dict(pts=presentation_pts, rawPts=frame.pts, presentationSkipSamples=presentation_skip_samples,
+            timeBase=inspection.rational(tb), samples=frame.samples,
+            sampleRate=RATE, channels=6, layout=self.layout, sampleFormat="fltp",
+            planeSha256=[inspection.sha(memoryview(p)[:frame.samples * 4]) for p in frame.planes]))
         require((last - integer(self.frames[0]["pts"] * fraction(self.frames[0]["timeBase"]) * RATE)) <= RATE * 30,
             "AudioMediaSpanExceeded")
         begin, finish = max(first, self.start), min(last, self.end)
@@ -133,46 +140,91 @@ class Projection:
         return self.frames, blocks
 
 
-def read_audio(path, stream_index, start, end, budget, selected=None, packet_limit=inspection.MAX_PACKETS):
+def read_audio(path, stream_index, start, end, budget, selected=None, packet_limit=inspection.MAX_PACKETS, source_window=False, whole_prefix=False):
     """Each invocation opens an independent demux/decode context."""
     import av
     records = []
-    projection = Projection(start, end)
     with av.open(str(path)) as container:
         stream = next((s for s in container.streams if s.index == stream_index), None)
         require(stream is not None, "MissingAudioStream")
         extra, tb = configuration(stream)
-        metadata = dict(streamIndex=stream_index, codec="aac", timeBase=inspection.rational(tb),
+        codec = stream.codec_context.name
+        layout = stream.codec_context.layout.name
+        projection = Projection(start, end, layout, source_window and selected is None)
+        metadata = dict(streamIndex=stream_index, codec=codec, timeBase=inspection.rational(tb),
             codecConfigurationSha256=inspection.sha(extra), sampleRate=RATE, channels=6,
-            layout="5.1", sampleFormat="fltp", language=stream.metadata.get("language"),
+            layout=layout, sampleFormat="fltp", language=stream.metadata.get("language"),
+            decoderPolicy="ac3-cons_noisegen=1" if codec == "ac3" else "aac-native-default",
+            presentationPolicy="observed-skip-presentation-v1",
+            sourceWindow=source_window,
+            contextPolicy="source-start-prefix" if whole_prefix else "observed-packet-preroll",
+            initialPaddingSamples=stream.codec_context.initial_padding,
+            trailingPaddingSamples=stream.codec_context.trailing_padding,
             disposition=int(stream.disposition), streamStartPts=stream.start_time,
             streamDurationPts=stream.duration, decoderDelay=getattr(stream.codec_context, "delay", None))
         require(metadata["disposition"] in (0, 1), "UnsupportedAudioDisposition")
-        ctx = stream.codec_context if selected is None else av.CodecContext.create("aac", "r")
+        ctx = stream.codec_context if selected is None else av.CodecContext.create(codec, "r")
         ctx.thread_count = 2
+        # Frame-seeded AC-3 noise is deterministic across nonlinear edits and fresh decoders.
+        if codec == "ac3":
+            ctx.options = {"cons_noisegen": "1"}
         if selected is not None:
             ctx.extradata = extra
         ctx.open()
-        total = 0
+        require(codec != "ac3" or "cons_noisegen" not in ctx.options, "UnconsumedAc3DecoderPolicy")
+        # Decoder overlap is distinct from container/encoder priming. A remux may legitimately
+        # declare zero initial padding while the codec still needs a preceding decoded frame.
+        metadata["requiredContextSamples"] = metadata["initialPaddingSamples"]
+        total, ordinal = 0, 0
+        prefix, prefix_samples = [], 0
+        padding = metadata["requiredContextSamples"]
+        require(0 <= padding <= RATE * inspection.MAX_SECONDS, "UnsupportedCodecPadding")
         for packet in container.demux(stream):
             budget.check()
             if not packet.size:
                 continue
-            require(len(records) < packet_limit, "AggregatePacketBudgetExceeded")
-            total += packet.size
-            require(total <= inspection.MAX_BYTES and bytes(stream.codec_context.extradata or b"") == extra,
+            require(ordinal < 10_000_000 and bytes(stream.codec_context.extradata or b"") == extra,
                 "AudioConfigurationOrBudgetChanged")
-            record = packet_record(packet, len(records), tb)
-            if records:
-                require(record["dts"] > records[-1]["dts"] and record["pts"] == records[-1]["pts"] + records[-1]["duration"],
-                    "AudioPacketGapOrOverlap")
-            records.append(record)
+            record = packet_record(packet, ordinal, tb)
+            packet_samples = integer(record["duration"] * tb * RATE)
+            require(0 < packet_samples <= 8192, "UnsupportedAudioPacketSampleSpan")
+            metadata["requiredContextSamples"] = max(metadata["requiredContextSamples"], packet_samples)
+            padding = metadata["requiredContextSamples"]
+            keep = not source_window or whole_prefix or (record["pts"] + record["duration"]) * tb > start
+            if source_window and not records and not keep and (record["pts"] + record["duration"]) * tb <= start:
+                prefix.append(record)
+                prefix_samples += integer(record["duration"] * tb * RATE)
+                while prefix and prefix_samples - integer(prefix[0]["duration"] * tb * RATE) >= padding:
+                    prefix_samples -= integer(prefix.pop(0)["duration"] * tb * RATE)
+                require(len(prefix) <= 64, "PrerollObservationBudgetExceeded")
+            if keep:
+                if source_window and not records:
+                    records.extend(prefix)
+                    total += sum(p["size"] for p in prefix)
+                require(len(records) < packet_limit, "AggregatePacketBudgetExceeded")
+                total += packet.size
+                require(total <= inspection.MAX_BYTES, "AudioConfigurationOrBudgetChanged")
+                if records:
+                    require(record["dts"] > records[-1]["dts"] and record["pts"] == records[-1]["pts"] + records[-1]["duration"],
+                        "AudioPacketGapOrOverlap")
+                records.append(record)
             if selected is None or record["sequence"] in selected:
                 for frame in ctx.decode(packet):
-                    projection.collect(frame, tb, budget)
+                    skip = sum(struct.unpack("<IIBB", bytes.fromhex(s["hex"]))[0] for s in record["sideData"])
+                    # A standalone AC-3 context trims declared startup samples while retaining the
+                    # packet's raw PTS; the demux-bound context advances it. Preserve raw PTS and
+                    # apply only that observed declared skip to its presentation coordinate.
+                    unadvanced_skip = (skip if selected is not None and codec == "ac3" and skip > 0
+                        and frame.pts * (frame.time_base or tb) == record["pts"] * tb
+                        and frame.samples + skip == integer(record["duration"] * tb * RATE) else 0)
+                    projection.collect(frame, tb, budget, unadvanced_skip)
+            ordinal += 1
+            if source_window and record["pts"] * tb >= end:
+                break
         for frame in ctx.decode(None):
             projection.collect(frame, tb, budget)
     frames, pcm = projection.finish()
+    metadata["packetOrdinalBase"] = records[0]["sequence"] if records else 0
     return metadata, records, frames, pcm
 
 
@@ -201,16 +253,38 @@ def extents(packets, frames):
         measuredTrailingDiscardSamples=measured_trailing)
 
 
-def qualify_track(path, index, start, end, budget, packet_limit):
-    metadata, reference, frames, pcm = read_audio(path, index, start, end, budget, packet_limit=packet_limit)
+def qualify_track(path, index, start, end, budget, packet_limit, source_window=False):
+    metadata, reference, frames, pcm = read_audio(path, index, start, end, budget, packet_limit=packet_limit, source_window=source_window)
     selected = [p for p in reference if p["pts"] * fraction(p["timeBase"]) < end
         and (p["pts"] + p["duration"]) * fraction(p["timeBase"]) > start]
     require(bool(selected) and [p["sequence"] for p in selected] == list(range(selected[0]["sequence"], selected[-1]["sequence"] + 1)),
         "IncompleteAudioPacketIntersection")
+    preroll, samples = [], 0
+    for packet in reversed([p for p in reference if p["sequence"] < selected[0]["sequence"]]):
+        if samples >= metadata["requiredContextSamples"]:
+            break
+        preroll.insert(0, packet)
+        samples += integer(packet["duration"] * fraction(packet["timeBase"]) * RATE)
+    # Startup priming can be represented by the selected source's declared skip packet.
+    require(samples >= metadata["requiredContextSamples"] or selected[0]["sequence"] == 0,
+        "MissingObservedCodecPreroll")
+    retained = preroll + selected
     again, reread, finite_frames, finite_pcm = read_audio(path, index, start, end, budget,
-        {p["sequence"] for p in selected}, packet_limit)
+        {p["sequence"] for p in retained}, packet_limit, source_window)
+    if pcm != finite_pcm and source_window:
+        # PNS state can depend on the entire AAC decode history. Retain that history only
+        # when it fits the unchanged packet/frame/byte limits; native MP4 output edits and
+        # the final audible PCM still have to prove that the prefix is not audible.
+        metadata, reference, frames, pcm = read_audio(path, index, start, end, budget,
+            packet_limit=packet_limit, source_window=True, whole_prefix=True)
+        selected = [p for p in reference if p["pts"] * fraction(p["timeBase"]) < end
+            and (p["pts"] + p["duration"]) * fraction(p["timeBase"]) > start]
+        preroll = [p for p in reference if p["sequence"] < selected[0]["sequence"]]
+        retained = preroll + selected
+        again, reread, finite_frames, finite_pcm = read_audio(path, index, start, end, budget,
+            {p["sequence"] for p in retained}, packet_limit, source_window=True, whole_prefix=True)
     require(again == metadata and reference == reread, "AudioSourceRereadMismatch")
-    require(pcm == finite_pcm, "UnsupportedAudioContextPolicy")
+    require(pcm == finite_pcm, "UnsupportedAudioContextPolicy" + metadata["codec"].upper())
     # The source's terminal packet duration can already include discard padding.
     # This policy proves an internal audible interval, never the source EOF edit.
     require(reference[-1]["pts"] * fraction(reference[-1]["timeBase"]) >= end,
@@ -218,19 +292,19 @@ def qualify_track(path, index, start, end, budget, packet_limit):
     first_sample = integer(frames[0]["pts"] * fraction(frames[0]["timeBase"]) * RATE)
     packet_sample = integer(reference[0]["pts"] * fraction(reference[0]["timeBase"]) * RATE)
     declared_start = sum(struct.unpack("<IIBB", bytes.fromhex(s["hex"]))[0] for s in reference[0]["sideData"])
-    require(first_sample - packet_sample == declared_start, "UnexplainedAudioStartDiscard")
+    require(source_window or first_sample - packet_sample == declared_start, "UnexplainedAudioStartDiscard")
     for i, packet in enumerate(reference):
         for side in packet["sideData"]:
             leading, trailing, why_a, why_b = struct.unpack("<IIBB", bytes.fromhex(side["hex"]))
             require(why_a == why_b == 0 and (i == 0 or leading == 0)
                 and (i == len(reference) - 1 or trailing == 0), "UnsupportedSourceSkipLocation")
-    observation = extents(selected, finite_frames)
+    observation = extents(retained, finite_frames)
     packet_start, packet_end = fraction(observation["packetStart"]), fraction(observation["packetEnd"])
-    require(0 <= start - packet_start < selected[0]["duration"] * fraction(selected[0]["timeBase"])
+    require(0 <= start - packet_start < sum(p["duration"] * fraction(p["timeBase"]) for p in preroll + selected[:1])
         and 0 <= packet_end - end < selected[-1]["duration"] * fraction(selected[-1]["timeBase"]), "AudioExtensionRejected")
     return dict(metadata, referencePackets=reference, rereadPackets=reread, selectedPackets=selected,
         referenceFrames=frames, finiteFrames=finite_frames, referencePcm=pcm, finitePcm=finite_pcm,
-        prerollOrdinals=[], prerollPolicy=PREROLL, packetInterval=dict(start=inspection.rational(packet_start), end=inspection.rational(packet_end)),
+        prerollPackets=preroll, prerollOrdinals=[p["sequence"] for p in preroll], prerollPolicy=PREROLL, packetInterval=dict(start=inspection.rational(packet_start), end=inspection.rational(packet_end)),
         intendedAudibleInterval=dict(start=inspection.rational(start), end=inspection.rational(end)),
         leadingExtension=inspection.rational(start - packet_start), trailingExtension=inspection.rational(packet_end - end),
         editObservation=observation)
@@ -242,7 +316,7 @@ def write_packets(source, output, args, report, budget):
     before = output.stat()
     require(before.st_size == 0, "OwnedOutputNotEmpty")
     selected = {args.stream: report["videoReport"]["selectedPackets"]}
-    selected.update({t["streamIndex"]: t["selectedPackets"] for t in report["tracks"]})
+    selected.update({t["streamIndex"]: t["prerollPackets"] + t["selectedPackets"] for t in report["tracks"]})
     start = fraction(report["commonStart"])
     # r+b keeps the transaction's preexisting file identity and never creates a path.
     with output.open("r+b") as handle, av.open(str(source)) as incoming:
@@ -252,8 +326,13 @@ def write_packets(source, output, args, report, budget):
             for index in selected:
                 original = incoming.streams[index]
                 copied = outgoing.add_stream_from_template(original)
-                copied.metadata.update(original.metadata)
-                copied.disposition = original.disposition
+                copied.metadata.clear()
+                track = next((t for t in report["tracks"] if t["streamIndex"] == index), None)
+                if track is not None:
+                    copied.metadata["language"] = track["outputLanguage"]
+                    copied.disposition = track["outputDisposition"]
+                else:
+                    copied.disposition = original.disposition
                 streams[index], ordinals[index], seen[index] = copied, 0, 0
             expected = {index: {p["sequence"]: p for p in rows} for index, rows in selected.items()}
             count = size = 0
@@ -261,17 +340,18 @@ def write_packets(source, output, args, report, budget):
                 budget.check()
                 if not packet.size:
                     continue
-                count += 1
-                size += packet.size
-                require(count <= inspection.MAX_PACKETS and size <= inspection.MAX_BYTES, "AggregatePacketBudgetExceeded")
+                require(count < 10_000_000, "TraversalPacketBudgetExceeded")
                 index = packet.stream.index
                 ordinal = ordinals[index]
                 ordinals[index] += 1
                 row = expected[index].get(ordinal)
                 if row is None:
                     continue
+                count += 1
+                size += packet.size
+                require(count <= inspection.MAX_PACKETS and size <= inspection.MAX_BYTES, "AggregatePacketBudgetExceeded")
                 if index == args.stream:
-                    record, _ = inspection.packet_record(packet, ordinal, "h264", bytes(packet.stream.codec_context.extradata), packet.time_base)
+                    record, _ = inspection.packet_record(packet, ordinal, args.codec, bytes(packet.stream.codec_context.extradata), packet.time_base)
                 else:
                     record = packet_record(packet, ordinal, packet.time_base)
                 require(record == row, "CopyManifestRereadMismatch")
@@ -281,6 +361,8 @@ def write_packets(source, output, args, report, budget):
                 packet.stream = streams[index]
                 outgoing.mux(packet)
                 seen[index] += 1
+                if all(seen[key] == len(rows) for key, rows in selected.items()):
+                    break
                 # Flush Python I/O; FFmpeg's internal mux buffers still require the final size check.
                 handle.flush()
                 require(handle.tell() <= inspection.MAX_BYTES, "OutputBudgetExceeded")
@@ -297,6 +379,10 @@ def validate_output(source, output, args, report, budget):
     output_hash = inspection.source_digest(output)
     start, end = fraction(report["commonStart"]), fraction(report["commonEnd"])
     with av.open(str(output)) as container:
+        output_declared_duration = container.streams[0].duration
+        output_declared_tb = container.streams[0].time_base
+        require(output_declared_duration is not None and output_declared_duration * output_declared_tb == end - start,
+            "OutputDeclaredVideoDurationMismatch")
         report.update(outputContainer=container.format.name, outputStreamKinds=[s.type for s in container.streams],
             outputChapterCount=len(container.chapters()))
         require("mp4" in container.format.name.split(",") and len(container.streams) == 1 + len(report["tracks"])
@@ -307,7 +393,7 @@ def validate_output(source, output, args, report, budget):
     source_tb = fraction(vr["timeBase"])
     selected_frames = [f for f in vr["referenceFrames"] if args.start_pts <= f["pts"] < args.end_pts]
     checks = video.packet_checks(vr["selectedPackets"], packets, source_tb, tb, args.start_pts)
-    checks.update(outputConfiguration=codec == "h264" and inspection.sha(extra) == vr["codecConfigurationSha256"],
+    checks.update(outputConfiguration=codec == args.codec and inspection.sha(extra) == vr["codecConfigurationSha256"],
         outputNativeReconstruction=video.same_pixels(selected_frames, frames),
         outputFrameTiming=len(selected_frames) == len(frames) and all(
             (a["pts"] - args.start_pts) * source_tb == b["pts"] * tb and a["duration"] * source_tb == b["duration"] * tb
@@ -317,6 +403,7 @@ def validate_output(source, output, args, report, budget):
     require(all(checks.values()), "ActualOutputVideoRejected")
     vr["checks"].update(checks)
     vr.update(outputPackets=packets, outputFrames=frames, outputTimeBase=inspection.rational(tb),
+        outputStreamDurationPts=output_declared_duration,
         outputConfigurationSha256=inspection.sha(extra), outputSha256=output_hash,
         commonShift=inspection.rational(Fraction(0)), outputValidated=True)
     actual_tracks = []
@@ -326,9 +413,11 @@ def validate_output(source, output, args, report, budget):
             packet_limit=inspection.MAX_PACKETS - count)
         count += len(packets)
         require(count <= inspection.MAX_PACKETS, "AggregatePacketBudgetExceeded")
-        for field in ("codec", "codecConfigurationSha256", "sampleRate", "channels", "layout", "sampleFormat", "language", "disposition"):
+        for field in ("codec", "codecConfigurationSha256", "sampleRate", "channels", "layout", "sampleFormat", "decoderPolicy"):
             require(metadata[field] == track[field], "ActualOutputAudioConfigurationRejected")
-        expected = track["selectedPackets"]
+        require(metadata["language"] == track["outputLanguage"] and metadata["disposition"] == track["outputDisposition"],
+            "ActualOutputAudioMetadataRejected")
+        expected = track["prerollPackets"] + track["selectedPackets"]
         require(len(packets) == len(expected), "ActualOutputAudioPacketRejected")
         for a, b in zip(expected, packets):
             require(a["payloadSha256"] == b["payloadSha256"] and a["size"] == b["size"]
@@ -349,7 +438,7 @@ def execute(args):
         generation=args.generation, policy=POLICY, success=False, error=None)
     try:
         budget = inspection.Budget()
-        require(args.codec == "h264", "UnsupportedVideoCodec")
+        require(args.codec in ("h264", "hevc"), "UnsupportedVideoCodec")
         require((args.phase == "qualify") == (args.output_media is None and args.manifest_id is None), "InvalidPhaseArguments")
         if args.phase != "qualify":
             require(args.output_media is not None and args.manifest_id is not None and len(args.manifest_id) == 64,
@@ -358,7 +447,7 @@ def execute(args):
         for choice in args.audio_stream:
             parts = choice.split(":")
             require(len(parts) == 2 and parts[0].isdigit(), "InvalidAudioSelection")
-            require(parts[1] == "aac", "UnsupportedAudioContextPolicy")
+            require(parts[1] in ("aac", "ac3"), "UnsupportedAudioContextPolicy")
             selections.append(int(parts[0]))
         require(1 <= len(selections) <= 2 and len(set(selections)) == len(selections) and args.stream not in selections,
             "InvalidAudioSelection")
@@ -372,7 +461,6 @@ def execute(args):
             vr = video.execute(video_args)
             require(vr["success"], vr.get("error") or "VideoQualificationRejected")
             budget.check()
-            require(vr["sourceContainerStartUs"] == 0, "UnsupportedContainerEpoch")
             tb = fraction(vr["timeBase"])
             start, end = args.start_pts * tb, args.end_pts * tb
             integer(start * RATE)
@@ -380,19 +468,24 @@ def execute(args):
             tracks = []
             count = len(vr["referencePackets"])
             for index in selections:
-                track = qualify_track(source, index, start, end, budget, inspection.MAX_PACKETS - count)
+                track = qualify_track(source, index, start, end, budget, inspection.MAX_PACKETS - count,
+                    source_window=getattr(args, "source_window", False))
                 count += len(track["referencePackets"])
                 require(count <= inspection.MAX_PACKETS, "AggregatePacketBudgetExceeded")
                 tracks.append(track)
+            has_default = any(t["disposition"] == 1 for t in tracks)
+            for index, track in enumerate(tracks):
+                track["outputDisposition"] = track["disposition"] if has_default else int(index == 0)
+                track["outputLanguage"] = track["language"] or "und"
             build = build_identity(budget)
-            report.update(sourceSha256=vr["sourceSha256"], sourceContainerStartUs=0,
+            report.update(sourceSha256=vr["sourceSha256"], sourceContainerStartUs=vr["sourceContainerStartUs"],
                 commonStart=inspection.rational(start), commonEnd=inspection.rational(end), commonShift=inspection.rational(Fraction(0)),
                 videoManifestId=inspection.sha(canonical(vr["selectedPackets"])), videoReport=vr, tracks=tracks, build=build)
             identity = {key: report[key] for key in ("sourceIdentity", "generation", "sourceSha256", "policy", "commonStart",
                 "commonEnd", "commonShift", "videoManifestId", "tracks")}
             identity["buildIdentity"] = build["buildSha256"]
             report["manifestId"] = inspection.sha(canonical(identity))
-            require(inspection.source_digest(source) == report["sourceSha256"], "SourceChanged")
+            require(inspection.source_digest(source, streaming=getattr(args, "source_window", False), budget=budget) == report["sourceSha256"], "SourceChanged")
             if args.phase != "qualify":
                 require(report["manifestId"].upper() == args.manifest_id.upper(), "AudioManifestChanged")
                 output = Path(args.output_media)
@@ -400,7 +493,7 @@ def execute(args):
                     write_packets(source, output, args, report, budget)
                 else:
                     validate_output(source, output, args, report, budget)
-            require(inspection.source_digest(source) == report["sourceSha256"], "SourceChanged")
+            require(inspection.source_digest(source, streaming=getattr(args, "source_window", False), budget=budget) == report["sourceSha256"], "SourceChanged")
             budget.check()
         require(not logs.failed, "NativeDecoderError")
         report["success"] = True
