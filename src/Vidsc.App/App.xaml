@@ -153,6 +153,23 @@
       </Setter>
     </Style>
     <Style TargetType="ItemsControl" BasedOn="{StaticResource DarkControl}" />
+    <Style TargetType="ListBox" BasedOn="{StaticResource DarkControl}" />
+    <Style TargetType="ListBoxItem">
+      <Setter Property="Padding" Value="4,3" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="ItemBorder" Background="Transparent" Padding="{TemplateBinding Padding}">
+              <ContentPresenter />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ItemBorder" Property="Background" Value="#2C4255" /></Trigger>
+              <Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemBorder" Property="Background" Value="#365672" /></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style TargetType="StatusBar" BasedOn="{StaticResource DarkControl}" />
     <Style TargetType="StatusBarItem" BasedOn="{StaticResource DarkControl}" />
     <Style TargetType="ToolTip" BasedOn="{StaticResource DarkControl}" />
