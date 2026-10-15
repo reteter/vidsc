@@ -153,6 +153,10 @@ wrong/live/unknown child identity cannot release ownership, a queued export canc
 before launch, and simulated PID reuse reconciles both owners exactly once while
 preserving recovery artifacts. This does not simulate a real failed native kill.
 Focused tests pass 31 cases; the updated canonical CI passes 409 cases.
+One review-regression packaged acceptance at implementation commit `2280df2`
+passes the same real export/cancellation/validation/reuse scenarios above with
+the development CLI directory removed from PATH. Release bundle checks pass;
+application smoke remains skipped. No additional codec or duration is qualified.
 
 ```powershell
 pwsh -NoProfile -File tools/Verify-M3AudioExport.ps1
