@@ -7,6 +7,16 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 conditional packet-aware AAC backend — 15 October 2026
+
+After #44 squash (`5343248`), #43 adds source-bound packet-aware AAC copy with exact
+whole-interval native context proof and independent output validation. Audio and
+video-only routes share source protection, cancellation, no-clobber promotion and
+recovery. Actual packaged integration passes, including conflict/cancellation and
+invalid-output refusal; local CI passes 400 cases. AC-3 is explicitly refused,
+and the [capability/evidence record](validation/2026-10-15-m3-packet-audio.md) preserves
+the narrow matrix. Full M3 remains open; M1 and #28 were not resumed.
+
 ## M3 CLI audio selection assessment — 15 October 2026
 
 After squash merge #41 (`f51b09a`), #42 tests two packaged CLI seek/duration
