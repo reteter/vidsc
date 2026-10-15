@@ -64,6 +64,8 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                 throw new InvalidOperationException("The packet-aware audio verifier is unavailable.");
             if (audioQualification is null && qualification.SourceContainerStartUs != 0)
                 throw new InvalidOperationException("This CLI route requires a verified zero container start time.");
+            string? seek = audioQualification is null
+                ? FormatExactSeek(new(qualification.Request.StartPts, qualification.Request.Source.TimeBase)) : null;
             var source = InspectionSourceIdentity.Capture(sourcePath);
             if (source.IdentityKey != qualification.Request.Source.SourceId)
                 throw new InvalidOperationException("The source identity changed after qualification.");
@@ -88,7 +90,6 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             }
             else
             {
-                string seek = FormatExactSeek(new(qualification.Request.StartPts, qualification.Request.Source.TimeBase));
                 var current = await verifier.QualifyAsync(sourcePath, qualification.Request, jobId,
                     cancellationToken, Started).ConfigureAwait(false);
                 if (current.SourceSHA256 != qualification.SourceSHA256 || current.ConfigSHA256 != qualification.ConfigSHA256 ||
@@ -99,7 +100,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                 int packets = checked(current.Request.LastPacket - current.Request.FirstPacket + 1);
                 // -y applies only to our exclusively registered, delete-protected temporary file.
                 // For this proved stream-copy route, -frames:v counts selected packets, including RASL.
-                string[] arguments = ["-hide_banner", "-nostdin", "-v", "error", "-progress", "pipe:1", "-y", "-ss", seek,
+                string[] arguments = ["-hide_banner", "-nostdin", "-v", "error", "-progress", "pipe:1", "-y", "-ss", seek!,
                     "-i", Path.GetFullPath(sourcePath), "-map", $"0:{current.Request.Source.StreamIndex}",
                     "-an", "-sn", "-dn", "-c:v", "copy", "-frames:v", packets.ToString(CultureInfo.InvariantCulture),
                     "-map_metadata", "-1", "-map_chapters", "-1", "-avoid_negative_ts", "disabled",

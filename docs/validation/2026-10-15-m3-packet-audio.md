@@ -9,7 +9,7 @@ and squash merged as `5343248`. Neither refused command is used for audio export
 ## Conditional capability and independent evidence
 
 `PacketAudioCopyVerifier` issues a sealed `QualifiedAudioCopyRange` only after an
-actual bounded native process and independent C# checks of its raw evidence. The
+actual bounded native process; C# independently cross-checks its raw evidence. The
 policy is `aac48k51-exact-intersection-v1`: AVC IDR video from the existing finite
 qualification plus explicitly selected AAC, native 48 kHz/5.1 planar float. The
 schema permits at most two selected AAC streams, processed separately under one
@@ -55,6 +55,10 @@ the existing receipt and promote without replacement. Returned audio timings exp
 the intended and retained source/output intervals and packet edge extensions after
 actual validation and commit. Retained intervals describe compressed packet
 coverage; they do not infer encoder priming or redefine the intended audible range.
+The first retained packet may precede S, so its common-epoch output PTS and
+`OutputRetainedInterval.Start` may be negative. `OutputAudibleInterval` remains
+`[0,E-S)`; the public immutable timings disclose both intervals. Raw internal
+`Evidence` is not a public priming API.
 
 Audio and video-only exports share one executor, job slot, source transaction,
 cancellation and recovery path. An unconfirmed child retains the transaction and
@@ -72,6 +76,28 @@ decode, two decoder threads, bounded video representation, at most 16 MiB audio
 working buffers, 30-second worker budget, 40-second process deadline and 2 MiB JSON.
 All limits apply together. Missing durations, sample-grid holes, unsupported side
 data, truncation, stale manifests and numeric overflow fail closed.
+
+The 30-second span is an outer rejection ceiling, not supported source duration.
+The 512-frame cap applies to the entire reference decode of each selected stream,
+including audio outside `[S,E)`; 1024 packets is shared by full-source selected
+video/audio streams. At 1024 samples per AAC frame, 512 frames represent about
+10.92 seconds at 48 kHz, and video/aggregate limits may reject earlier. C# also
+counts all reference decoded samples against 16 MiB at 24 bytes/sample (about
+14.56 seconds); Python bounds the projected interval plus frame/scratch overhead
+to 16 MiB. These are per-pass bounds, not a measured total process-memory cap.
+A one-second cut from a 20-second source is outside this capability. Two-track
+schema/parser tests do not establish a two-track native corpus acceptance.
+
+The pinned PyAV logging default is `None`; workers do not call `set_level`.
+Consequently `Capture`/`NativeDecoderError` is passive in this runtime, not an
+additional proved error gate. A nested video capture owns its own log buffer.
+Decoder exceptions, corrupt-frame checks, raw packet/time evidence and complete
+native reconstruction comparisons remain active. Enabling logging and testing
+thread/nested-capture behavior requires a separate bounded task; it is not changed
+implicitly in this increment. Python handle flush improves observed write position
+but does not flush FFmpeg's internal mux buffers; the final physical file-size
+check remains mandatory.
+Follow-up [#47](https://github.com/reteter/vidsc/issues/47) owns the logging gate.
 
 The initial diagnostic budget was three attempts:
 
@@ -104,6 +130,29 @@ remaining blockers. Reconciliation identity branches are unit tested and reviewe
 a genuinely unconfirmed native exit was not forced in the acceptance run.
 The refreshed bundle passes its staged runtime/CLI/scene checks. Application smoke
 is deliberately skipped under the M1 deferral; no new UI/playback acceptance is claimed.
+`Vidsc.App` does not yet invoke this audio route. Standalone qualification leases
+are per verifier instance; the current harness owns one instance and awaits calls
+sequentially. Application integration must provide the planned shared media-worker
+ownership across instances and operation types before exposing this route.
+That prerequisite is tracked in [#48](https://github.com/reteter/vidsc/issues/48).
+
+## Review corrections
+
+Review of `508f81c` clarified the combined full-source limits, passive log capture
+and application-integration boundary. Exact CLI seek formatting now precedes
+source/transaction I/O; an invalid seek cannot create a journal. Unconfirmed audio
+children mark guard retention before registry insertion as additional protection.
+The static export slot already prevents a second video export from overwriting
+retained ownership. Reconciliation deliberately closes guards while retaining the
+registered unvalidated output/journal for explicit recovery.
+
+New parser cases cover two AAC tracks and source/output mapping, aggregate packet
+counts 1023/1024/1025, chapters, arithmetic overflow and nested UTF-8 canonical bytes.
+A synthetic retained-state test uses real file guards and both real semaphores:
+wrong/live/unknown child identity cannot release ownership, a queued export cancels
+before launch, and simulated PID reuse reconciles both owners exactly once while
+preserving recovery artifacts. This does not simulate a real failed native kill.
+Focused tests pass 31 cases; the updated canonical CI passes 409 cases.
 
 ```powershell
 pwsh -NoProfile -File tools/Verify-M3AudioExport.ps1

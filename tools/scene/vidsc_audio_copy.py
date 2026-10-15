@@ -281,6 +281,8 @@ def write_packets(source, output, args, report, budget):
                 packet.stream = streams[index]
                 outgoing.mux(packet)
                 seen[index] += 1
+                # Flush Python I/O; FFmpeg's internal mux buffers still require the final size check.
+                handle.flush()
                 require(handle.tell() <= inspection.MAX_BYTES, "OutputBudgetExceeded")
             require(all(seen[index] == len(rows) for index, rows in selected.items()), "IncompleteCopyManifest")
         handle.flush()
@@ -355,7 +357,7 @@ def execute(args):
         selections = []
         for choice in args.audio_stream:
             parts = choice.split(":")
-            require(len(parts) == 2 and parts[0].isdigit() and parts[1] in ("aac", "ac3"), "InvalidAudioSelection")
+            require(len(parts) == 2 and parts[0].isdigit(), "InvalidAudioSelection")
             require(parts[1] == "aac", "UnsupportedAudioContextPolicy")
             selections.append(int(parts[0]))
         require(1 <= len(selections) <= 2 and len(set(selections)) == len(selections) and args.stream not in selections,
@@ -366,6 +368,8 @@ def execute(args):
                 require("mp4" in container.format.name.split(","), "UnsupportedSourceContainer")
             video_args = type(args)(**vars(args))
             video_args.output_media = None
+            # The nested video Capture owns its logs. Capture is passive unless the runtime
+            # enables PyAV logging; raw evidence and decoder exceptions remain the gates.
             vr = video.execute(video_args)
             require(vr["success"], vr.get("error") or "VideoQualificationRejected")
             budget.check()

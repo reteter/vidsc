@@ -122,6 +122,81 @@ public sealed class PacketAudioCopyVerifierTests
         Assert.ThrowsAny<Exception>(() => Validate());
     }
 
+    [Theory]
+    [InlineData("source-index")]
+    [InlineData("output-index")]
+    public void TwoAacTracksValidateOnlyWithTheirSelectedSourceAndOutputMapping(string defect)
+    {
+        var (report, video) = Fixture();
+        var selections = AddSecondTrack(report);
+        AddOutputEvidence(report);
+        AudioCopyReport Validate() => PacketAudioCopyVerifier.ParseReport(report.ToJsonString(), video, selections, Job, "validate", H, Helpers, Natives, H, H);
+
+        var parsed = Validate();
+        Assert.NotNull(parsed.Output);
+        Assert.Equal(new[] { 1, 7 }, parsed.Timings.Select(t => t.StreamIndex));
+        var second = report["outputTracks"]![1]!;
+        second[defect == "source-index" ? "sourceStreamIndex" : "outputStreamIndex"] = 1;
+        Assert.Equal("Output audio mapping differs.", Assert.Throws<InvalidOperationException>(() => Validate()).Message);
+    }
+
+    [Fact]
+    public void AggregatePacketBudgetIncludesVideoAndBothAudioTracks()
+    {
+        var (report, video) = Fixture();
+        var selections = AddSecondTrack(report);
+        foreach (var track in report["tracks"]!.AsArray())
+        {
+            foreach (string key in new[] { "referencePackets", "rereadPackets" })
+                track![key] = new JsonArray(Enumerable.Range(0, 510).Select(i => (JsonNode)Packet(i, false)).ToArray());
+        }
+        RehashManifest(report);
+        AudioCopyReport Qualify() => PacketAudioCopyVerifier.ParseReport(report.ToJsonString(), video, selections, Job, "qualify", H, Helpers, Natives, H);
+        Assert.Equal(2, Qualify().Timings.Count);
+
+        foreach (string key in new[] { "referencePackets", "rereadPackets" })
+            report["tracks"]![1]![key]!.AsArray().Add(Packet(510, false));
+        RehashManifest(report);
+        Assert.Equal(2, Qualify().Timings.Count);
+        foreach (string key in new[] { "referencePackets", "rereadPackets" })
+            report["tracks"]![1]![key]!.AsArray().Add(Packet(511, false));
+        RehashManifest(report);
+        Assert.Equal("Aggregate packet budget exceeded.", Assert.Throws<InvalidOperationException>(() => Qualify()).Message);
+    }
+
+    [Fact]
+    public void ActualOutputRejectsChaptersAfterOtherwiseValidValidation()
+    {
+        var (report, video) = Fixture();
+        AddOutputEvidence(report);
+        AudioCopyReport Validate() => PacketAudioCopyVerifier.ParseReport(report.ToJsonString(), video, Selections, Job, "validate", H, Helpers, Natives, H, H);
+        Assert.NotNull(Validate().Output);
+        report["outputChapterCount"] = 1;
+        Assert.Equal("Unsupported output container.", Assert.Throws<InvalidOperationException>(() => Validate()).Message);
+    }
+
+    [Theory]
+    [InlineData("sample-coordinate")]
+    [InlineData("time-rescale")]
+    public void MalformedLongFrameCoordinatesCannotOverflowSilently(string defect)
+    {
+        var (report, video) = Fixture();
+        Assert.NotNull(Parse(report, video));
+        var frame = report["tracks"]![0]!["referenceFrames"]![0]!;
+        frame["pts"] = long.MaxValue;
+        if (defect == "time-rescale") frame["timeBase"] = new JsonObject { ["numerator"] = long.MaxValue, ["denominator"] = 1 };
+        RehashManifest(report);
+        Assert.Throws<OverflowException>(() => Parse(report, video));
+    }
+
+    [Fact]
+    public void CanonicalNestedEvidenceUsesStableUnescapedUtf8Bytes()
+    {
+        using var document = JsonDocument.Parse("{\"z\":[{\"text\":\"żółć\\n\",\"a\":true}],\"a\":null}");
+        var expected = System.Text.Encoding.UTF8.GetBytes("{\"a\": null, \"z\": [{\"a\": true, \"text\": \"żółć\\n\"}]}");
+        Assert.Equal(expected, System.Text.Encoding.UTF8.GetBytes(FiniteCopyVerifier.Canonical(document.RootElement)));
+    }
+
     [Fact]
     public void ReconciliationRequiresOriginalProcessExitRatherThanPidAlone()
     {
@@ -134,6 +209,30 @@ public sealed class PacketAudioCopyVerifierTests
     }
 
     private static AudioCopyReport Parse(JsonObject report, QualifiedCopyRange video) => PacketAudioCopyVerifier.ParseReport(report.ToJsonString(), video, Selections, Job, "qualify", H, Helpers, Natives, H);
+    private static AudioCopySelection[] AddSecondTrack(JsonObject report)
+    {
+        var second = report["tracks"]![0]!.DeepClone(); second["streamIndex"] = 7;
+        second["language"] = "pol";
+        report["tracks"]!.AsArray().Add(second);
+        RehashManifest(report);
+        return [new(1, "aac"), new(7, "aac")];
+    }
+    private static void AddOutputEvidence(JsonObject report)
+    {
+        report["phase"] = "validate"; report["outputSha256"] = H; report["outputContainer"] = "mov,mp4,m4a,3gp,3g2,mj2";
+        report["outputChapterCount"] = 0;
+        var kinds = new JsonArray("video"); var output = new JsonArray();
+        foreach (var track in report["tracks"]!.AsArray())
+        {
+            var actual = track!.DeepClone();
+            actual["sourceStreamIndex"] = track["streamIndex"]!.DeepClone(); actual["outputStreamIndex"] = output.Count + 1;
+            actual["packets"] = actual["selectedPackets"]!.DeepClone(); actual["frames"] = actual["finiteFrames"]!.DeepClone(); actual["pcm"] = actual["finitePcm"]!.DeepClone();
+            output.Add(actual); kinds.Add("audio");
+        }
+        report["outputTracks"] = output; report["outputStreamKinds"] = kinds;
+        var nested = report["videoReport"]!.AsObject(); nested["outputValidated"] = true; nested["outputSha256"] = H; nested["outputConfigurationSha256"] = H;
+        nested["outputTimeBase"] = TB(); nested["outputPackets"] = nested["selectedPackets"]!.DeepClone(); nested["outputFrames"] = nested["freshFrames"]!.DeepClone();
+    }
     private static JsonObject TB() => new() { ["numerator"] = 1, ["denominator"] = 48000 };
     private static JsonObject Time(long value) => new() { ["numerator"] = value, ["denominator"] = 48000 };
     private static JsonObject Packet(int i, bool video) => new()

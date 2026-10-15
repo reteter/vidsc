@@ -157,8 +157,9 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
             var result = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(40), cancellationToken, Started, MaxReport).ConfigureAwait(false);
             if (result.Started && !result.ExitConfirmed)
             {
-                Require(stuckGuards.TryAdd(jobId, new(activeProcess, result.ProcessId ?? -1, guards)), "Duplicate stuck job.");
+                // An unconfirmed child must keep protection even if registration fails.
                 retained = true;
+                Require(stuckGuards.TryAdd(jobId, new(activeProcess, result.ProcessId ?? -1, guards)), "Duplicate stuck job.");
                 throw new NavigationProcessStuckException(result.ProcessId ?? -1, new IOException("Audio verifier exit was not confirmed."));
             }
             cancellationToken.ThrowIfCancellationRequested();
@@ -275,7 +276,7 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
     private static void ValidateSelections(QualifiedCopyRange video, IReadOnlyList<AudioCopySelection> selections)
     {
         Require(video.Request.CodecName == "h264" && video.SourceContainerStartUs == 0 && selections.Count is >= 1 and <= 2 &&
-            selections.All(s => s.StreamIndex >= 0 && s.StreamIndex != video.Request.Source.StreamIndex && s.CodecName is "aac" or "ac3") &&
+            selections.All(s => s.StreamIndex >= 0 && s.StreamIndex != video.Request.Source.StreamIndex) &&
             selections.Select(s => s.StreamIndex).Distinct().Count() == selections.Count, "Unsupported audio selection.");
         Require(selections.All(s => s.CodecName == "aac"), "UnsupportedAudioContextPolicy");
     }
