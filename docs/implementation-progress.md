@@ -7,6 +7,19 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M3 integrated stream-copy gate — 15 October 2026
+
+From `c7a792c`, the shared #13/#34/#48 implementation integrates metadata/access-point
+ownership, minimal numeric export controls, source-qualified AAC/AC-3 context,
+bounded source windows and native MKV/SubRip/chapter mapping. One independent review
+found three issues; raw subtitle validation, retained qualification IDs and bounded
+cancellable source hashing were fixed and checked. Final CI passes 437 cases; the
+packaged eight-cell matrix and physical timing/subtitle negatives pass. Packaged
+audio lifecycle and independently invoked Flyleaf hardware/D3D11 output playback
+also pass. The [M3 acceptance record](validation/2026-10-15-m3-completion.md) states
+the source/range capability matrix and frozen build identities. This establishes
+the bounded M3 gate, not universal input eligibility or M1/M4/M5 completion.
+
 ## M3 streaming probe ownership — 15 October 2026
 
 After #55 squash (`6a57952`), #56 coordinates navigation/progressive ffprobe reads
