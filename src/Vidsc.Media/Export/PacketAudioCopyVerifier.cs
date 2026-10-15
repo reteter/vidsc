@@ -64,22 +64,48 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         IReadOnlyList<AudioCopySelection> audioSelections, Guid jobId, CancellationToken cancellationToken,
         Action<ToolProcessIdentity>? processStarted = null)
     {
+        using var lease = await CopyJobAdmission.EnterAsync(jobId, cancellationToken).ConfigureAwait(false);
+        ToolProcessIdentity? active = null;
+        void Started(ToolProcessIdentity identity) { active = identity; processStarted?.Invoke(identity); }
+        try
+        {
+            return await QualifyUnderLeaseAsync(sourcePath, video, audioSelections, jobId, lease,
+                cancellationToken, Started).ConfigureAwait(false);
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            // The shared owner roots this verifier and its guarded invocation until reconciliation.
+            lease.Retain(active, exception.ProcessId, () =>
+            {
+                if (!ReleaseStuckGuards(jobId)) throw new InvalidOperationException("Audio invocation is still retained.");
+            });
+            throw;
+        }
+    }
+
+    internal async Task<QualifiedAudioCopyRange> QualifyUnderLeaseAsync(string sourcePath, QualifiedCopyRange video,
+        IReadOnlyList<AudioCopySelection> audioSelections, Guid jobId, CopyJobAdmission.Lease lease,
+        CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
+    {
+        CheckLease(lease, jobId);
         var frozen = audioSelections.ToArray();
         var report = await RunAsync(sourcePath, video, frozen, jobId, "qualify", null, null, cancellationToken, processStarted).ConfigureAwait(false);
         return new(video, frozen, report);
     }
 
     internal async Task WriteAsync(string sourcePath, QualifiedAudioCopyRange qualification, Guid jobId,
-        string temporaryPath, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
+        string temporaryPath, CopyJobAdmission.Lease lease, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
+        CheckLease(lease, jobId);
         var report = await RunAsync(sourcePath, qualification.Video, qualification.AudioSelections, jobId, "write", temporaryPath,
             qualification.ManifestID, cancellationToken, processStarted).ConfigureAwait(false);
         Bind(qualification, report);
     }
 
     internal async Task<FiniteOutputValidation> ValidateOutputAsync(string sourcePath, QualifiedAudioCopyRange qualification,
-        Guid jobId, string temporaryPath, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
+        Guid jobId, string temporaryPath, CopyJobAdmission.Lease lease, CancellationToken cancellationToken, Action<ToolProcessIdentity>? processStarted = null)
     {
+        CheckLease(lease, jobId);
         var report = await RunAsync(sourcePath, qualification.Video, qualification.AudioSelections, jobId, "validate", temporaryPath,
             qualification.ManifestID, cancellationToken, processStarted).ConfigureAwait(false);
         Bind(qualification, report);
@@ -91,7 +117,9 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         "Audio qualification binding changed.");
 
     /// <summary>Reconcile a standalone qualification or export child; no background polling.</summary>
-    public bool TryReconcileStuckJob(Guid jobId)
+    public bool TryReconcileStuckJob(Guid jobId) => CopyJobAdmission.TryReconcile(jobId);
+
+    private bool TryReleaseInvocation(Guid jobId)
     {
         lock (stuckGuards)
         {
@@ -103,7 +131,13 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
         }
     }
 
-    internal bool ReleaseStuckGuards(Guid jobId) => !stuckGuards.ContainsKey(jobId) || TryReconcileStuckJob(jobId);
+    internal bool ReleaseStuckGuards(Guid jobId) => !stuckGuards.ContainsKey(jobId) || TryReleaseInvocation(jobId);
+
+    private static void CheckLease(CopyJobAdmission.Lease lease, Guid jobId)
+    {
+        lease.EnsureActive();
+        Require(lease.JobId == jobId, "Copy admission job identity differs.");
+    }
 
     internal static bool ProcessExitConfirmed(ToolProcessIdentity? identity, int processId)
     {

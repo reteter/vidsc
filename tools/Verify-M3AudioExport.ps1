@@ -49,6 +49,51 @@ try
     Require(CopyBoundaryPlanner.TryPropose(video.ToObservation().Binding, bounds,
         CopyBoundaryPolicy.Expand, [video.ToObservation()], out var proposal), "Qualified video did not reach planner.");
     var exporter = new VerifiedCopyExporter(videoVerifier, new FfmpegCli(args[3], args[3]), audioVerifier);
+    // Hold a real qualification at its started callback while independent callers queue.
+    // This barrier controls ownership timing without guessing a native job duration.
+    var began = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    using var release = new ManualResetEventSlim();
+    var heldQualification = Task.Run(() => audioVerifier.QualifyAsync(sourcePath, video, [new(1, "aac")],
+        Guid.NewGuid(), default, _ =>
+        {
+            began.TrySetResult();
+            if (!release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Admission barrier expired.");
+        }));
+    using var queuedCancellation = new CancellationTokenSource();
+    Task<QualifiedAudioCopyRange>? queuedAudio = null;
+    Task<VerifiedCopyExportResult>? queuedVideo = null;
+    try
+    {
+        await began.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        int queuedStarts = 0;
+        var otherVerifier = new PacketAudioCopyVerifier(python, driver);
+        queuedAudio = otherVerifier.QualifyAsync(sourcePath, video, [new(1, "aac")], Guid.NewGuid(),
+            queuedCancellation.Token, _ => Interlocked.Increment(ref queuedStarts));
+        queuedVideo = new VerifiedCopyExporter(videoVerifier, new FfmpegCli(args[3], args[3]))
+            .ExportVideoOnlyAsync(sourcePath, video, proposal!, Path.Combine(work, "queued.mp4"),
+                Path.Combine(work, "queued-journals"), queuedCancellation.Token,
+                _ => Interlocked.Increment(ref queuedStarts));
+        Require(!queuedAudio.IsCompleted && !queuedVideo.IsCompleted, "Independent callers bypassed admission.");
+        queuedCancellation.Cancel();
+        try { await queuedAudio; throw new Exception("Queued audio ignored cancellation."); }
+        catch (OperationCanceledException) { }
+        try { await queuedVideo; throw new Exception("Queued video ignored cancellation."); }
+        catch (OperationCanceledException) { }
+        Require(queuedStarts == 0 && !Directory.Exists(Path.Combine(work, "queued-journals")),
+            "A queued caller started a process or transaction.");
+    }
+    finally
+    {
+        queuedCancellation.Cancel();
+        release.Set();
+        await heldQualification;
+        foreach (Task? pending in new Task?[] { queuedAudio, queuedVideo })
+        {
+            if (pending is null) continue;
+            try { await pending; }
+            catch (OperationCanceledException) { }
+        }
+    }
     var journals = Path.Combine(work, "journals");
     var destination = Path.Combine(work, "audio-result.mp4");
     var result = await exporter.ExportAudioAsync(sourcePath, audio, proposal!, destination, journals, default);
@@ -85,7 +130,7 @@ try
         Path.Combine(work, "video-only.mp4"), journals, default);
     Require(videoOnly.Success, "Shared executor regressed the video-only route: " + videoOnly.Error);
     Require(Hash(sourcePath) == sourceHash, "Source changed.");
-    Console.WriteLine("PASS actual packet-aware AAC qualification/copy/validation/promotion, conflict, started cancellation, invalid output, slot reuse and video-only coexistence.");
+    Console.WriteLine("PASS actual shared admission across independent audio/video callers, queued cancellation, AAC qualification/copy/validation/promotion, conflict, started cancellation, invalid output, slot reuse and video-only coexistence.");
 }
 catch (Exception exception) { Console.Error.WriteLine(exception); return 1; }
 return 0;

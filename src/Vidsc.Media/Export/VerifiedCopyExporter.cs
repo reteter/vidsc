@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Vidsc.Core.Export;
@@ -21,9 +20,6 @@ public sealed record CopyExportProgress(Guid JobId, RationalTime CopiedTime);
 public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli cli,
     PacketAudioCopyVerifier? audioVerifier = null)
 {
-    private static readonly SemaphoreSlim JobSlot = new(1, 1);
-    private static StuckJob? stuckJob;
-
     public Task<VerifiedCopyExportResult> ExportVideoOnlyAsync(string sourcePath,
         QualifiedCopyRange qualification, CopyBoundaryProposal proposal, string destination,
         string journalDirectory, CancellationToken cancellationToken,
@@ -46,7 +42,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         IProgress<CopyExportProgress>? progress)
     {
         Guid jobId = Guid.NewGuid();
-        await JobSlot.WaitAsync(cancellationToken).ConfigureAwait(false);
+        using var lease = await CopyJobAdmission.EnterAsync(jobId, cancellationToken).ConfigureAwait(false);
         OwnedOutputTransaction? transaction = null;
         ToolProcessIdentity? activeProcess = null;
         bool retainOwnership = false;
@@ -74,16 +70,16 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             IReadOnlyList<QualifiedAudioTiming>? audioTimings = null;
             if (audioQualification is not null)
             {
-                var currentAudio = await audioVerifier!.QualifyAsync(sourcePath, qualification,
-                    audioQualification.AudioSelections, jobId, cancellationToken, Started).ConfigureAwait(false);
+                var currentAudio = await audioVerifier!.QualifyUnderLeaseAsync(sourcePath, qualification,
+                    audioQualification.AudioSelections, jobId, lease, cancellationToken, Started).ConfigureAwait(false);
                 if (currentAudio.ManifestID != audioQualification.ManifestID ||
                     currentAudio.BuildIdentity != audioQualification.BuildIdentity)
                     throw new InvalidOperationException("The source, audio context or verifier build changed.");
                 await audioVerifier.WriteAsync(sourcePath, currentAudio, jobId, transaction.TemporaryPath,
-                    cancellationToken, Started).ConfigureAwait(false);
+                    lease, cancellationToken, Started).ConfigureAwait(false);
                 transaction.ProtectForValidation();
                 output = await audioVerifier.ValidateOutputAsync(sourcePath, currentAudio, jobId,
-                    transaction.TemporaryPath, cancellationToken, Started).ConfigureAwait(false);
+                    transaction.TemporaryPath, lease, cancellationToken, Started).ConfigureAwait(false);
                 audioTimings = currentAudio.AudioTimings;
                 // This route reports completion only after actual output validation, not packet write progress.
                 progress?.Report(new(jobId, new(output.EndPts, output.TimeBase)));
@@ -131,8 +127,12 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         {
             // Keep both the source guard and the shared slot until that exact child is confirmed gone.
             retainOwnership = true;
-            lock (JobSlot) stuckJob = new(jobId, transaction, activeProcess, exception.ProcessId,
-                audioQualification is null ? null : audioVerifier);
+            lease.Retain(activeProcess, exception.ProcessId, () =>
+            {
+                if (audioQualification is not null && !audioVerifier!.ReleaseStuckGuards(jobId))
+                    throw new InvalidOperationException("Audio invocation is still retained.");
+                transaction?.Dispose();
+            });
             return new(jobId, false, false, false, null, transaction?.JournalPath,
                 "An owned process has not confirmed exit. The export slot and source protection remain reserved.");
         }
@@ -160,36 +160,13 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                 finally
                 {
                     transaction?.Dispose();
-                    JobSlot.Release();
                 }
             }
         }
     }
 
     /// <summary>No background polling. A caller may reconcile a stuck job after checking its status.</summary>
-    public static bool TryReconcileStuckJob(Guid jobId)
-    {
-        lock (JobSlot)
-        {
-            var retained = stuckJob;
-            if (retained is null || retained.JobId != jobId) return false;
-            try
-            {
-                using var process = Process.GetProcessById(retained.ProcessId);
-                if (retained.Process is null) return false;
-                if (process.StartTime.ToUniversalTime() == retained.Process.StartedAtUtc.UtcDateTime && !process.HasExited)
-                    return false;
-            }
-            catch (ArgumentException) { /* The original process no longer exists. */ }
-            catch (InvalidOperationException) { return false; }
-            catch (System.ComponentModel.Win32Exception) { return false; }
-            if (retained.AudioVerifier is not null && !retained.AudioVerifier.ReleaseStuckGuards(jobId)) return false;
-            retained.Transaction?.Dispose();
-            stuckJob = null;
-            JobSlot.Release();
-            return true;
-        }
-    }
+    public static bool TryReconcileStuckJob(Guid jobId) => CopyJobAdmission.TryReconcile(jobId);
 
     internal static string FormatExactSeek(RationalTime time)
     {
@@ -200,7 +177,4 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         return (value / 1_000_000).ToString(CultureInfo.InvariantCulture) + "." +
             (value % 1_000_000).ToString("D6", CultureInfo.InvariantCulture);
     }
-
-    private sealed record StuckJob(Guid JobId, OwnedOutputTransaction? Transaction,
-        ToolProcessIdentity? Process, int ProcessId, PacketAudioCopyVerifier? AudioVerifier);
 }

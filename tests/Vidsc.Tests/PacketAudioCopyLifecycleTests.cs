@@ -8,10 +8,7 @@ using Xunit;
 
 namespace Vidsc.Tests;
 
-[CollectionDefinition("Packet audio copy lifecycle", DisableParallelization = true)]
-public sealed class PacketAudioCopyLifecycleCollection { }
-
-[Collection("Packet audio copy lifecycle")]
+[Collection("Copy job admission")]
 public sealed class PacketAudioCopyLifecycleTests
 {
     [Fact]
@@ -24,38 +21,33 @@ public sealed class PacketAudioCopyLifecycleTests
         File.WriteAllBytes(runtime, [4, 5, 6]);
         Guid job = Guid.NewGuid();
         var audio = new PacketAudioCopyVerifier("unused-python", "unused-driver");
+        var independentAudio = new PacketAudioCopyVerifier("missing-python", "missing-driver");
         var exporter = new VerifiedCopyExporter(new FiniteCopyVerifier("unused-python", "unused-driver"),
             new FfmpegCli("unused-ffmpeg", "unused-ffprobe"), audio);
         const BindingFlags instance = BindingFlags.Instance | BindingFlags.NonPublic;
-        const BindingFlags shared = BindingFlags.Static | BindingFlags.NonPublic;
-        var jobSlot = (SemaphoreSlim)typeof(VerifiedCopyExporter).GetField("JobSlot", shared)!.GetValue(null)!;
         var invocationSlot = (SemaphoreSlim)typeof(PacketAudioCopyVerifier).GetField("invocationSlot", instance)!.GetValue(audio)!;
-        var stuckJob = typeof(VerifiedCopyExporter).GetField("stuckJob", shared)!;
         var stuckGuards = (IDictionary)typeof(PacketAudioCopyVerifier).GetField("stuckGuards", instance)!.GetValue(audio)!;
         var heldType = typeof(PacketAudioCopyVerifier).GetNestedType("HeldInvocation", BindingFlags.NonPublic)!;
-        var stuckType = typeof(VerifiedCopyExporter).GetNestedType("StuckJob", BindingFlags.NonPublic)!;
         using var process = Process.GetCurrentProcess();
         var live = new ToolProcessIdentity(process.Id, "synthetic-child", process.StartTime.ToUniversalTime());
         var reused = live with { StartedAtUtc = live.StartedAtUtc.AddSeconds(-1) };
         var guards = new List<FileStream>();
         OwnedOutputTransaction? transaction = null;
-        bool ownsJobSlot = false, ownsInvocationSlot = false, injected = false;
+        using var lease = await CopyJobAdmission.EnterAsync(job, default);
+        bool ownsInvocationSlot = false, retained = false;
+        int cleanupAttempts = 0, transactionReleases = 0;
+        bool invocationReleasedBeforeTransaction = false;
         using var cancellation = new CancellationTokenSource();
         Task<VerifiedCopyExportResult>? competingExport = null;
+        Task<QualifiedAudioCopyRange>? competingQualification = null;
 
         // Inject only the retained state: this exercises real guards and public reconciliation,
         // not native process termination. Different start times synthetically model PID reuse.
         void HoldAudio(ToolProcessIdentity? identity) => stuckGuards[job] =
             Activator.CreateInstance(heldType, new object?[] { identity, process.Id, guards })!;
-        void HoldExport(ToolProcessIdentity? identity)
-        {
-            lock (jobSlot)
-                stuckJob.SetValue(null, Activator.CreateInstance(stuckType,
-                    new object?[] { job, transaction, identity, process.Id, audio }));
-        }
         void AssertProtected()
         {
-            Assert.Equal(0, jobSlot.CurrentCount);
+            Assert.Throws<InvalidOperationException>(lease.EnsureActive);
             Assert.Equal(0, invocationSlot.CurrentCount);
             Assert.Throws<IOException>(() => File.WriteAllBytes(source, [9]));
             Assert.Throws<IOException>(() => File.WriteAllBytes(runtime, [9]));
@@ -64,9 +56,6 @@ public sealed class PacketAudioCopyLifecycleTests
 
         try
         {
-            Assert.Null(stuckJob.GetValue(null));
-            ownsJobSlot = jobSlot.Wait(0);
-            Assert.True(ownsJobSlot);
             ownsInvocationSlot = invocationSlot.Wait(0);
             Assert.True(ownsInvocationSlot);
             transaction = OwnedOutputTransaction.Prepare(job, InspectionSourceIdentity.Capture(source),
@@ -76,42 +65,51 @@ public sealed class PacketAudioCopyLifecycleTests
             guards.Add(new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read));
             guards.Add(new FileStream(runtime, FileMode.Open, FileAccess.Read, FileShare.Read));
             HoldAudio(live);
-            HoldExport(live);
-            injected = true;
+            lease.Retain(reused, process.Id, () =>
+            {
+                cleanupAttempts++;
+                if (!audio.ReleaseStuckGuards(job)) throw new InvalidOperationException("Audio invocation is still retained.");
+                invocationReleasedBeforeTransaction = stuckGuards.Count == 0 && invocationSlot.CurrentCount == 1;
+                transaction.Dispose();
+                transactionReleases++;
+            });
+            retained = true;
+            lease.Dispose();
 
             Assert.False(VerifiedCopyExporter.TryReconcileStuckJob(Guid.NewGuid()));
-            Assert.False(audio.TryReconcileStuckJob(Guid.NewGuid()));
+            Assert.False(independentAudio.TryReconcileStuckJob(Guid.NewGuid()));
             Assert.False(VerifiedCopyExporter.TryReconcileStuckJob(job));
-            Assert.False(audio.TryReconcileStuckJob(job));
             AssertProtected();
 
             bool started = false;
             // The reserved slot must stop this call before it can inspect any qualification or start a tool.
             competingExport = exporter.ExportVideoOnlyAsync(source, null!, null!, Path.Combine(root, "competing.bin"),
                 root, cancellation.Token, _ => started = true);
+            competingQualification = independentAudio.QualifyAsync(Path.Combine(root, "missing-source.bin"), null!, [],
+                Guid.NewGuid(), cancellation.Token, _ => started = true);
             Assert.False(competingExport.IsCompleted);
+            Assert.False(competingQualification.IsCompleted);
             cancellation.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => competingExport);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => competingQualification);
             Assert.False(started);
             AssertProtected();
 
-            HoldAudio(reused);
-            HoldExport(null);
-            Assert.False(VerifiedCopyExporter.TryReconcileStuckJob(job));
-            AssertProtected();
-            HoldExport(reused);
             HoldAudio(null);
-            Assert.False(audio.TryReconcileStuckJob(job));
-            Assert.False(VerifiedCopyExporter.TryReconcileStuckJob(job));
+            Assert.False(independentAudio.TryReconcileStuckJob(job));
+            Assert.Equal(0, transactionReleases);
             AssertProtected();
 
             HoldAudio(reused);
-            Assert.True(VerifiedCopyExporter.TryReconcileStuckJob(job));
+            Assert.True(independentAudio.TryReconcileStuckJob(job));
             Assert.False(VerifiedCopyExporter.TryReconcileStuckJob(job));
             Assert.False(audio.TryReconcileStuckJob(job));
-            Assert.Equal(1, jobSlot.CurrentCount);
+            Assert.Equal(3, cleanupAttempts);
+            Assert.Equal(1, transactionReleases);
+            Assert.True(invocationReleasedBeforeTransaction);
             Assert.Equal(1, invocationSlot.CurrentCount);
-            Assert.Null(stuckJob.GetValue(null));
+            using (var next = await CopyJobAdmission.EnterAsync(Guid.NewGuid(), default).WaitAsync(TimeSpan.FromSeconds(5)))
+                next.EnsureActive();
             Assert.Empty(stuckGuards);
             File.WriteAllBytes(source, [1, 2, 3]);
             File.WriteAllBytes(runtime, [4, 5, 6]);
@@ -128,21 +126,20 @@ public sealed class PacketAudioCopyLifecycleTests
                 try { await competingExport; }
                 catch (Exception) { /* Observe any failure if an earlier assertion interrupted the scenario. */ }
             }
-            lock (jobSlot)
+            if (competingQualification is not null)
             {
-                if (injected) stuckJob.SetValue(null, null);
-                try
-                {
-                    stuckGuards.Clear();
-                    try { foreach (var guard in guards) guard.Dispose(); }
-                    finally { transaction?.Dispose(); }
-                }
-                finally
-                {
-                    if (ownsInvocationSlot && invocationSlot.CurrentCount == 0) invocationSlot.Release();
-                    if (ownsJobSlot && jobSlot.CurrentCount == 0) jobSlot.Release();
-                }
+                try { await competingQualification; }
+                catch (Exception) { /* Observe cancellation after an interrupted assertion. */ }
             }
+            if (retained && transactionReleases == 0)
+            {
+                HoldAudio(reused);
+                CopyJobAdmission.TryReconcile(job);
+            }
+            stuckGuards.Clear();
+            foreach (var guard in guards) guard.Dispose();
+            transaction?.Dispose();
+            if (ownsInvocationSlot && invocationSlot.CurrentCount == 0) invocationSlot.Release();
             Directory.Delete(root, recursive: true);
         }
     }
