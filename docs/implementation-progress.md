@@ -297,3 +297,34 @@ The workflow adopts squash as the default PR merge method, with merge-commit exc
 explicit user choice. PR Completion's existing validated landing helper supports squash; no custom
 script or repository-settings change was needed. Documented post-squash branch handling preserves
 branches when safe deletion refuses. This policy change does not authorize landing the workflow PR.
+
+## M4a bounded software-reference feasibility
+
+[#14](https://github.com/reteter/vidsc/issues/14) and
+[#59](https://github.com/reteter/vidsc/issues/59) resumed isolated software-reference
+experiments only. The initial packet-remux method passes a finite authored AVC
+two-join case but refuses Main10 decode-order overlap. A separately bounded
+CRA/leading-picture and planned-CFR-DTS refinement passes the authored Main10
+two-join case, including repeated fresh-decoder interior reconstruction and copied
+VCL payloads. The supplied x265 output preserves 247 copied frames exactly and
+passes observed decode/timing checks, while its first lossy identity oracle refuses
+static boundaries. Those initial refusals remain preserved. A separately budgeted
+exact-native-first identity oracle passes existing output plus an identical fresh
+repeat without weakening the original lossy matching rule.
+
+The final bounded 12-cell reference matrix covers AVC, Main10/open-GOP and supplied
+x265 two-join, explicit within-GOP selected-region encoding, source start and true
+EOF. Native source/window/output mapping, repeated copied reconstruction/VCL,
+configuration, representation and frozen numerical quality checks pass. Actual
+original EOF is independently observed; physical omission/duplication, reference,
+eight-bit and isolated terminal-end controls refuse corrupted outputs. A context
+duration artifact is explicitly outside the retained EOF interval.
+
+The [M4a evidence record](validation/2026-10-15-m4a-feasibility.md) preserves all
+budgets/attempts, corrections, native identities, quality calibration and bounded
+go decision. One independent review found only a memory-limit wording correction;
+canonical CI passes 437 cases and rollback checks. Frozen packaged Flyleaf hardware/
+D3D11 playback and source/output join comparisons pass within the user-approved
+short host check. This establishes the bounded M4a gate. NVIDIA HEVC/MOV and
+HDR/HRD remain unverified; audio is unselected. No accurate-export UI/production
+path, NVENC or later milestone was enabled; source media remains unchanged.
