@@ -20,6 +20,22 @@ Frame index mode requires the complete ordered PTS map, including for VFR. Nomin
 a display/input convention; neither it nor packet key flags certify exact presented frames or
 safe export cuts. Scene/CLI checks and indexing share one media-job slot.
 
+The **Segments** tab creates named intervals with Add/Apply, reorder/remove and Undo/Redo.
+Build the frame index before using **I**/**O** on a confirmed displayed frame; Out includes that
+frame through its verified end. Numeric seconds and dragged handles are requests, resolved forward
+before qualification. **Qualify copy plan** shows requested, resolved and effective copied ranges.
+Choose tracks/container/destination in **Stream copy**, then queue the current interval; each job
+freezes those choices, runs sequentially and refuses existing destinations. The bounded backend's
+codec/track limits still apply. No accurate-cut editor mode is enabled.
+
+Save/open `.vidsc.json` projects using the toolbar. **Recover** restores the separate debounced
+recovery document, also flushed before export; a missing or changed source retains edits and
+disables export until the binding is restored. An unfinished or invalid draft is saved independently
+from accepted intervals. Zoom scale, scrollbar and the full-clip overview orient the viewport;
+**Load visible thumbnails** loads at most eight advisory previews on demand. Space toggles playback,
+PageUp/PageDown jump ten seconds, brackets navigate analyzed scenes, and Ctrl+Z/Ctrl+Y undo/redo
+segment edits. Text fields keep their normal keyboard behavior.
+
 ---
 
 ## Prerequisites

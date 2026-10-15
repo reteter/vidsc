@@ -19,6 +19,77 @@ namespace Vidsc.Tests;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public async Task EditorRetainsEditsAcrossRecoveryAndRejectsMissingSourceEvenWithOldMetadata()
+    {
+        AppPaths paths = NewPaths();
+        string source = Path.Combine(paths.WorkDirectory, "fixture.mp4"); File.WriteAllText(source, "neutral synthetic source");
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher,
+            (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)));
+        try
+        {
+            await vm.OpenAsync(source);
+            vm.SegmentName = "First"; vm.AddSegment();
+            vm.CopyStartSeconds = "1"; vm.CopyEndSeconds = "2"; vm.SegmentName = "Second"; vm.AddSegment();
+            vm.UndoEditorCommand.Execute(null); Assert.Single(vm.Segments);
+            vm.RedoEditorCommand.Execute(null); Assert.Equal(2, vm.Segments.Count);
+            vm.CopyStartSeconds = "5"; vm.CopyEndSeconds = "1"; vm.SegmentName = "";
+            string project = Path.Combine(paths.WorkDirectory, "test.vidsc.json"); vm.SaveProject(project); vm.SaveRecovery();
+            await vm.RecoverProjectAsync(); Assert.Equal(2, vm.Segments.Count);
+            Assert.Equal("5", vm.CopyStartSeconds); Assert.Equal("1", vm.CopyEndSeconds); Assert.Equal("", vm.SegmentName);
+            File.Delete(source);
+            await vm.LoadProjectAsync(project);
+            Assert.Equal(2, vm.Segments.Count);
+            Assert.Contains("missing or changed", vm.EditorSummary);
+            Assert.Throws<InvalidOperationException>(vm.QueueCopyExport);
+        }
+        finally { await vm.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task BusyPreviewCannotReplaceTheOwnedWorkerTask()
+    {
+        AppPaths paths = NewPaths();
+        var gate = new TaskCompletionSource<Vidsc.Media.Scene.SceneJobResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths, Dispatcher.CurrentDispatcher,
+            (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)), sceneOverride: (_, _) => gate.Task);
+        try
+        {
+            await vm.OpenAsync(Path.Combine(paths.WorkDirectory, "fixture.mp4"));
+            vm.SceneCheckCommand.Execute(null);
+            var owned = vm.WaitForMediaJobIdleAsync(); Assert.False(owned.IsCompleted);
+            await vm.PreviewCopyAsync(); vm.PreviewCopyCommand.Execute(null);
+            Assert.Same(owned, vm.WaitForMediaJobIdleAsync());
+        }
+        finally
+        {
+            gate.TrySetResult(new(false, "fixture complete", "fixture", null, null, null, null, null, [], null, null));
+            await vm.ShutdownAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ConfirmedEditorUsesFreshNativeGetterAndKeepsExactRationalBoundaries()
+    {
+        AppPaths paths = NewPaths(); string source = Path.Combine(paths.WorkDirectory, "fixture.mp4"); File.WriteAllText(source, "fixture");
+        var engine = new FakePlaybackEngine();
+        var vm = new MainViewModel(engine, ToolsetWithStubCli(paths), paths, Dispatcher.CurrentDispatcher,
+            (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            navigationOverride: (_, _, _, _, _) => Task.FromResult(new Vidsc.Core.Navigation.NavigationMap(Rational.Create(1, 24), 0, [0, 1, 2], [0])));
+        try
+        {
+            await vm.OpenAsync(source); vm.BuildFrameIndexCommand.Execute(null); await vm.WaitForMediaJobIdleAsync();
+            var start = new RationalTime(1, Rational.Create(1, 24)); var end = new RationalTime(2, Rational.Create(1, 24));
+            engine.ObservedPresentation = new(engine.Positions.Generation, null, start, end, "fresh native fixture", 0, 1, 1);
+            Assert.Null(engine.Positions.Snapshot().ObservedPresentation);
+            vm.ConfirmBoundary(false); vm.ConfirmBoundary(true); vm.AddSegment();
+            Assert.Equal(start.AsSeconds(), vm.Segments[0].RequestedStart.AsSeconds());
+            Assert.Equal(end.AsSeconds(), vm.Segments[0].RequestedEnd.AsSeconds());
+            engine.ObservedPresentation = null;
+            Assert.Throws<InvalidOperationException>(() => vm.ConfirmBoundary(false));
+        }
+        finally { await vm.ShutdownAsync(); }
+    }
+    [Fact]
     public async Task SourceReplacementDropsQueuedTransportFromThePreviousSource()
     {
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -206,6 +277,8 @@ public sealed class MainViewModelTests
     public async Task ExportCancelsAndDrainsBackgroundInspectionBeforeAnyReplacementWork()
     {
         AppPaths paths = NewPaths();
+        string source = Path.Combine(paths.WorkDirectory, "source.mp4");
+        File.WriteAllText(source, "synthetic source binding");
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         bool cancelled = false;
@@ -221,7 +294,7 @@ public sealed class MainViewModelTests
             });
         try
         {
-            await vm.OpenAsync(Path.Combine(paths.WorkDirectory, "source.mp4"));
+            await vm.OpenAsync(source);
             vm.CopyDestination = Path.Combine(paths.WorkDirectory, "output.mp4");
             vm.BuildFrameIndexCommand.Execute(null);
             await entered.Task;
@@ -230,13 +303,13 @@ public sealed class MainViewModelTests
             Task export = vm.WaitForMediaJobIdleAsync();
             Assert.True(cancelled);
             Assert.False(export.IsCompleted);
-            Assert.False(vm.StartCopyExportCommand.CanExecute(null));
+            Assert.True(vm.StartCopyExportCommand.CanExecute(null)); // More immutable requests may join the queue.
             release.SetResult();
             await export;
             Assert.False(vm.IsMediaJobActive);
             Assert.False(vm.MediaJobStuck);
             Assert.Null(vm.CopyOutputPath);
-            Assert.Contains("metadata", vm.CopyExportSummary, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("discovery", vm.CopyExportSummary, StringComparison.OrdinalIgnoreCase);
             Assert.False(File.Exists(vm.CopyDestination));
         }
         finally { release.TrySetResult(); await vm.ShutdownAsync(); }
@@ -327,8 +400,9 @@ public sealed class MainViewModelTests
                     Language: null),
             });
 
-    private sealed class FakePlaybackEngine : IPlaybackEngine
+    private sealed class FakePlaybackEngine : IPlaybackEngine, IObservedPresentationSource
     {
+        public PresentationObservation? ObservedPresentation { get; set; }
         public PlaybackPositionTracker Positions { get; } = new();
 
         public PlaybackEngineStatus Status { get; private set; } = PlaybackEngineStatus.Ready;

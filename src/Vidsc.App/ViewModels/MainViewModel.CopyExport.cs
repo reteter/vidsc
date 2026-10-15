@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using Microsoft.Win32;
+using Vidsc.App.Services;
 using Vidsc.Core.Export;
 using Vidsc.Core.Navigation;
 using Vidsc.Core.Time;
@@ -27,6 +28,21 @@ public sealed partial class MainViewModel
     private CopyContainer _copyContainer = CopyContainer.Mp4;
     private bool _copyChapters = true;
     private bool _copyExportRequested;
+    private readonly Queue<CopyQueueItem> _copyQueue = new();
+    public ObservableCollection<CopyQueueItem> ExportQueue { get; } = [];
+    internal sealed record CopySnapshot(string SourcePath, string Identity, long OpenToken, long Generation,
+        int Stream, Rational TimeBase, long Origin, RationalTime In, RationalTime Out, CopyBoundaryPolicy Policy,
+        CopyContainer Container, bool Chapters, string Destination, AudioCopySelection[] Audio, int[] Subtitles);
+    public sealed class CopyQueueItem : ObservableObject
+    {
+        private string _status = "Queued";
+        internal readonly CopySnapshot Snapshot;
+        internal CopyQueueItem(CopySnapshot snapshot) { Snapshot = snapshot; Destination = snapshot.Destination; }
+        public string Destination { get; }
+        public string Status { get => _status; internal set => SetProperty(ref _status, value); }
+        public string? OutputPath { get; internal set; }
+        internal bool IsFinished { get; set; }
+    }
     public string CopyStartSeconds { get => _copyStart; set => SetProperty(ref _copyStart, value); }
     public string CopyEndSeconds { get => _copyEnd; set => SetProperty(ref _copyEnd, value); }
     public string CopyDestination { get => _copyDestination; set => SetProperty(ref _copyDestination, value); }
@@ -47,13 +63,8 @@ public sealed partial class MainViewModel
 
     private void InitializeCopyExportCommands()
     {
-        StartCopyExportCommand = new RelayCommand(() =>
-        {
-            var previous = _mediaJobTask;
-            _copyExportRequested = true;
-            RaiseCommandStates();
-            _mediaJobTask = ExportSelectedCopyAsync(previous);
-        }, () => _ffmpeg is not null && _sourcePath is not null && !_isBusy && !_shutdownRequested && !_mediaJobStuck && !_copyExportRequested);
+        StartCopyExportCommand = new RelayCommand(() => EditorAction(QueueCopyExport),
+            () => _ffmpeg is not null && _sourcePath is not null && !_isBusy && !_shutdownRequested && !_mediaJobStuck);
         OpenCopyOutputCommand = new RelayCommand(() =>
         {
             try { OpenCopyOutput(); }
@@ -63,7 +74,7 @@ public sealed partial class MainViewModel
         {
             CopyExportSummary = TryReconcileMediaJob() ? "Failed worker cleanup confirmed. You may retry." : "Worker exit/cleanup is still unconfirmed.";
         }, () => _retainedMediaJobId is not null && !_shutdownRequested);
-        CancelCopyExportCommand = new RelayCommand(() => _mediaJobCancellation?.Cancel(), () => _mediaJobActive && !_shutdownRequested);
+        CancelCopyExportCommand = new RelayCommand(() => { CancelQueuedCopies(); _mediaJobCancellation?.Cancel(); }, () => _mediaJobActive && !_shutdownRequested);
     }
 
     private void RefreshCopyTracks()
@@ -71,11 +82,63 @@ public sealed partial class MainViewModel
         CopyTracks.Clear();
         if (_mediaInfo is null) return;
         foreach (var stream in _mediaInfo.Streams.Where(s => s.IsAudio || s.CodecType == "subtitle"))
-            CopyTracks.Add(new(stream.Index, stream.CodecName,
-                $"{stream.CodecType}: {stream.CodecName} {stream.Language ?? "und"} {stream.ChannelLayout}", stream.IsAudio));
+        {
+            var choice = new ExportTrackChoice(stream.Index, stream.CodecName,
+                $"{stream.CodecType}: {stream.CodecName} {stream.Language ?? "und"} {stream.ChannelLayout}", stream.IsAudio);
+            choice.PropertyChanged += (_, _) =>
+            {
+                if (IsProjectBound()) _projectTrackSelection = CopyTracks.Where(t => t.IsSelected).Select(t => t.StreamIndex).ToArray();
+                ScheduleRecovery();
+            };
+            CopyTracks.Add(choice);
+        }
     }
 
-    private async Task ExportSelectedCopyAsync(Task previous)
+    private CopySnapshot CaptureCopySnapshot(bool chooseDestination)
+    {
+        RequireProjectBinding();
+        if (chooseDestination && string.IsNullOrWhiteSpace(CopyDestination))
+        {
+            var dialog = new SaveFileDialog { Filter = SelectedCopyContainer == CopyContainer.Mp4 ? "MP4 video|*.mp4" : "Matroska video|*.mkv",
+                AddExtension = true, DefaultExt = SelectedCopyContainer == CopyContainer.Mp4 ? ".mp4" : ".mkv", OverwritePrompt = false };
+            if (dialog.ShowDialog() != true) throw new OperationCanceledException("Destination selection cancelled.");
+            CopyDestination = dialog.FileName;
+        }
+        var video = _mediaInfo!.PrimaryVideo!;
+        var selected = CopyTracks.Where(t => t.IsSelected).ToArray();
+        var start = EditorUiBoundary(false) ?? throw new ArgumentException("Invalid In time.");
+        var end = EditorUiBoundary(true) ?? throw new ArgumentException("Invalid Out time.");
+        if (start >= end) throw new ArgumentException("Out must follow In.");
+        return new(_sourcePath!, _metadataIdentity!.IdentityKey, _openToken, _engine.Positions.Generation.Value,
+            video.Index, video.TimeBase!.Value, _mediaInfo.ContainerStartTicks ?? 0, start, end, SelectedCopyPolicy,
+            SelectedCopyContainer, PreserveCopyChapters, CopyDestination,
+            selected.Where(t => t.IsAudio).Select(t => new AudioCopySelection(t.StreamIndex, t.Codec)).ToArray(),
+            selected.Where(t => !t.IsAudio).Select(t => t.StreamIndex).ToArray());
+    }
+
+    public void QueueCopyExport()
+    {
+        var snapshot = CaptureCopySnapshot(true);
+        if (File.Exists(snapshot.Destination)) throw new IOException("Destination exists. Choose a new path; replacement is not enabled.");
+        // Retain bounded recent results without letting finished history consume pending capacity.
+        while (ExportQueue.Count >= 100 && ExportQueue.FirstOrDefault(j => j.IsFinished) is { } finished)
+            ExportQueue.Remove(finished);
+        if (ExportQueue.Count >= 100) throw new InvalidOperationException("The queue holds 100 pending exports. Wait for completion or cancel queued work.");
+        _recoveryTimer.Stop();
+        EditorProjectStore.Save(RecoveryPath, CaptureProject());
+        var item = new CopyQueueItem(snapshot); ExportQueue.Add(item); _copyQueue.Enqueue(item);
+        if (_copyExportRequested) return;
+        var previous = _mediaJobTask; _copyExportRequested = true;
+        _mediaJobTask = RunCopyQueueAsync(previous);
+    }
+    public void CancelQueuedCopies()
+    {
+        while (_copyQueue.TryDequeue(out var pending)) { pending.Status = "Cancelled before start"; pending.IsFinished = true; }
+    }
+    private bool SnapshotCurrent(CopySnapshot snapshot) => snapshot.OpenToken == _openToken && snapshot.Identity == _metadataIdentity?.IdentityKey
+        && snapshot.Generation == _engine.Positions.Generation.Value && IsProjectBound();
+
+    private async Task RunCopyQueueAsync(Task previous)
     {
         try
         {
@@ -86,26 +149,32 @@ public sealed partial class MainViewModel
                 await previous;
             }
             if (_mediaJobStuck) { CopyExportSummary = "Previous worker exit is unconfirmed; reconcile it before exporting."; return; }
-            if (!_shutdownRequested) await ExportSelectedCopyCoreAsync();
+            while (_copyQueue.TryDequeue(out var item))
+            {
+                var snapshot = item.Snapshot;
+                if (_shutdownRequested || !SnapshotCurrent(snapshot)) { item.Status = "Invalidated by source change"; item.IsFinished = true; continue; }
+                item.Status = "Resolving / qualifying / exporting";
+                try
+                {
+                    var result = await ExportSelectedCopyCoreAsync(snapshot);
+                    item.OutputPath = result?.Success == true ? result.Destination : null;
+                    item.Status = result?.Success == true ? "Completed — validated" : CopyExportSummary;
+                }
+                finally { item.IsFinished = true; }
+                if (_mediaJobStuck) { CancelQueuedCopies(); break; }
+            }
         }
         catch (Exception error) { CopyExportSummary = error.Message; }
-        finally { _copyExportRequested = false; RaiseCommandStates(); }
+        finally { CancelQueuedCopies(); _copyExportRequested = false; RaiseCommandStates(); }
     }
 
-    private async Task ExportSelectedCopyCoreAsync()
+    private async Task<VerifiedCopyExportResult?> ExportSelectedCopyCoreAsync(CopySnapshot snapshot)
     {
-        if (string.IsNullOrWhiteSpace(CopyDestination))
-        {
-            var dialog = new SaveFileDialog { Filter = SelectedCopyContainer == CopyContainer.Mp4 ? "MP4 video|*.mp4" : "Matroska video|*.mkv",
-                AddExtension = true, DefaultExt = SelectedCopyContainer == CopyContainer.Mp4 ? ".mp4" : ".mkv", OverwritePrompt = false };
-            if (dialog.ShowDialog() != true) return;
-            CopyDestination = dialog.FileName;
-        }
-        if (!TryBeginMediaJob()) return;
-        var selectedPolicy = SelectedCopyPolicy;
-        var selectedContainer = SelectedCopyContainer;
-        var preserveChapters = PreserveCopyChapters;
-        string startText = CopyStartSeconds, endText = CopyEndSeconds, destination = CopyDestination;
+        if (!SnapshotCurrent(snapshot) || !TryBeginMediaJob()) return null;
+        var selectedPolicy = snapshot.Policy;
+        var selectedContainer = snapshot.Container;
+        var preserveChapters = snapshot.Chapters;
+        string destination = snapshot.Destination;
         bool delegated = false;
         try
         {
@@ -113,27 +182,75 @@ public sealed partial class MainViewModel
             if (video?.TimeBase is not { IsPositive: true } tb || _metadataIdentity is null)
                 throw new InvalidOperationException("Reopen source metadata before exporting.");
             if (!CopyRangeDiscovery.TryCreate(_toolset, out var discovery)) throw new InvalidOperationException("Bundled copy discovery is unavailable.");
-            var selected = CopyTracks.Where(t => t.IsSelected).ToArray();
-            var audio = selected.Where(t => t.IsAudio).Select(t => new AudioCopySelection(t.StreamIndex, t.Codec)).ToArray();
-            var subtitles = selected.Where(t => !t.IsAudio).ToArray();
-            if (subtitles.Any(t => t.Codec != "subrip")) throw new InvalidOperationException("Only native SubRip subtitle copy is qualified.");
+            var audio = snapshot.Audio;
+            var subtitles = snapshot.Subtitles;
+            if (subtitles.Any(index => _mediaInfo!.Streams.Single(t => t.Index == index).CodecName != "subrip")) throw new InvalidOperationException("Only native SubRip subtitle copy is qualified.");
             if (selectedContainer == CopyContainer.Mp4 && subtitles.Length > 0)
                 throw new InvalidOperationException("Choose Matroska for SubRip/chapters, or explicitly deselect them. No conversion is performed.");
             if (selectedContainer == CopyContainer.Matroska && audio.Length > 0)
                 throw new InvalidOperationException("Selected Matroska audio still requires qualified CodecDelay/preroll timing. Use the qualified MP4 audio route or explicitly select video/SubRip only.");
             CopyExportSummary = "Resolving numeric input to observed presentation boundaries…";
-            var identity = new ProgressiveSourceIdentity(_metadataIdentity.IdentityKey, _engine.Positions.Generation.Value,
-                video.Index, tb, _mediaInfo!.ContainerStartTicks ?? 0);
+            var identity = new ProgressiveSourceIdentity(snapshot.Identity, snapshot.Generation, snapshot.Stream, snapshot.TimeBase, snapshot.Origin);
             var cancellation = _mediaJobCancellation!;
-            var found = await Task.Run(() => discovery!.DiscoverAsync(_sourcePath!, identity, ParseSeconds(startText),
-                ParseSeconds(endText), selectedPolicy, cancellation.Token, ObserveMediaProcess), cancellation.Token);
+            var found = await Task.Run(() => discovery!.DiscoverAsync(snapshot.SourcePath, identity, snapshot.In,
+                snapshot.Out, selectedPolicy, cancellation.Token, ObserveMediaProcess), cancellation.Token);
+            if (!SnapshotCurrent(snapshot)) throw new OperationCanceledException("Source changed while discovering export boundaries.");
             delegated = true;
-            await ExportCopyCoreAsync(found.Candidate, found.Requested, selectedPolicy, audio, destination,
-                selectedContainer == CopyContainer.Matroska ? new(subtitles.Select(t => t.StreamIndex).ToArray(), preserveChapters) : null);
+            return await ExportCopyCoreAsync(found.Candidate, found.Requested, selectedPolicy, audio, destination,
+                selectedContainer == CopyContainer.Matroska ? new(subtitles, preserveChapters) : null);
         }
         catch (NavigationProcessStuckException error) { RetainMediaJob(error); CopyExportSummary = error.Message; }
         catch (Exception error) { CopyExportSummary = error is OperationCanceledException ? "Stream-copy export cancelled." : error.Message; }
         finally { if (!delegated) EndMediaJob(); }
+        return null;
+    }
+
+    public Task PreviewCopyAsync()
+    {
+        if (!CanRunMediaJob() || _copyExportRequested || _mediaJobStuck)
+        {
+            CopyExportSummary = "Wait for the current media job before previewing.";
+            return Task.CompletedTask;
+        }
+        return _mediaJobTask = PreviewCopyCoreAsync();
+    }
+
+    private async Task PreviewCopyCoreAsync()
+    {
+        bool owned = false;
+        try
+        {
+            var previewSegmentId = SelectedSegment?.Id;
+            string previewName = SegmentName;
+            var snapshot = CaptureCopySnapshot(false);
+            if (!TryBeginMediaJob()) throw new InvalidOperationException("Wait for the current media job before previewing.");
+            owned = true;
+            if (!CopyRangeDiscovery.TryCreate(_toolset, out var discovery) || !FiniteCopyVerifier.TryCreate(_toolset, out var verifier, out _))
+                throw new InvalidOperationException("Bundled qualification runtime is unavailable.");
+            var identity = new ProgressiveSourceIdentity(snapshot.Identity, snapshot.Generation, snapshot.Stream, snapshot.TimeBase, snapshot.Origin);
+            var token = _mediaJobCancellation!.Token;
+            CopyExportSummary = "Qualifying copy plan…";
+            var found = await Task.Run(() => discovery!.DiscoverAsync(snapshot.SourcePath, identity, snapshot.In, snapshot.Out, snapshot.Policy, token, ObserveMediaProcess), token);
+            var video = await Task.Run(() => verifier!.QualifyAsync(snapshot.SourcePath, found.Candidate, Guid.NewGuid(), token, ObserveMediaProcess), token);
+            if (!SnapshotCurrent(snapshot)) throw new OperationCanceledException("Source changed.");
+            if (!CopyBoundaryPlanner.TryPropose(video.ToObservation().Binding, found.Requested, snapshot.Policy, [video.ToObservation()], out var proposal))
+                throw new InvalidOperationException("Verified range does not satisfy this copy policy.");
+            CopyExportSummary = $"All video copied; no re-encoded portions. Requested {found.Requested.Start.Requested.AsSeconds()}–{found.Requested.End.Requested.AsSeconds()} source s; frame resolved {found.Requested.Start.Resolved.AsSeconds()}–{found.Requested.End.Resolved.AsSeconds()} s; effective copy {proposal!.ResolvedInterval.Start.AsSeconds()}–{proposal.ResolvedInterval.End.AsSeconds()} s; total deltas {proposal.TotalStartDeltaSeconds}/{proposal.TotalEndDeltaSeconds} s. Export requalifies tracks and boundaries.";
+            if (SelectedSegment is { } selected && selected.Id == previewSegmentId
+                && SegmentName == previewName
+                && selected.RequestedStart.AsSeconds() == found.Requested.Start.Requested.AsSeconds()
+                && selected.RequestedEnd.AsSeconds() == found.Requested.End.Requested.AsSeconds()
+                && EditorUiBoundary(false) is { } currentIn && currentIn.AsSeconds() == snapshot.In.AsSeconds()
+                && EditorUiBoundary(true) is { } currentOut && currentOut.AsSeconds() == snapshot.Out.AsSeconds()
+                && Segments.IndexOf(selected) is >= 0 and var segmentIndex)
+            {
+                var resolved = selected with { Resolved = found.Requested };
+                Segments[segmentIndex] = resolved; SelectedSegment = resolved; ScheduleRecovery();
+            }
+        }
+        catch (NavigationProcessStuckException error) { RetainMediaJob(error); CopyExportSummary = error.Message; }
+        catch (Exception error) { CopyExportSummary = error is OperationCanceledException ? "Plan preview cancelled." : error.Message; }
+        finally { if (owned) EndMediaJob(); }
     }
 
     private static RationalTime ParseSeconds(string text)

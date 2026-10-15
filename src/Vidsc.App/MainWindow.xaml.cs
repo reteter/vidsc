@@ -46,6 +46,18 @@ public partial class MainWindow : Window
         Timeline.ScrubStarted += _viewModel.BeginScrub;
         Timeline.ScrubMoved += _viewModel.ScrubTo;
         Timeline.ScrubEnded += _viewModel.EndScrub;
+        Timeline.BoundaryRequested += _viewModel.SetRequestedBoundary;
+        Timeline.ViewportChanged += (start, span) =>
+        {
+            _viewModel.SetEditorViewport(start, span);
+            TimelineScroll.Maximum = Math.Max(0, Timeline.Duration - span);
+            TimelineScroll.ViewportSize = span; TimelineScroll.LargeChange = span * .8; TimelineScroll.Value = start;
+        };
+        _viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(MainViewModel.EditorViewport))
+                Timeline.SetViewport(_viewModel.EditorViewport.Start, _viewModel.EditorViewport.Span);
+        };
 
         _viewModel.AppendLog("MainWindow ready. Open a source, or drop a file onto the video surface.");
     }
@@ -124,6 +136,7 @@ public partial class MainWindow : Window
     private void OnZoomIn(object sender, RoutedEventArgs e) => Timeline.Zoom(.5);
     private void OnTimelineFit(object sender, RoutedEventArgs e) => Timeline.Fit();
     private void OnTimelineCenter(object sender, RoutedEventArgs e) => Timeline.Center();
+    private void OnTimelineScroll(object sender, ScrollEventArgs e) => Timeline.SetViewport(e.NewValue, Timeline.ViewSpan);
 
     private static bool IsEditingControl(object? source)
     {
@@ -139,13 +152,25 @@ public partial class MainWindow : Window
 
     private void OnNavigationKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Handled || _shutdownStarted || IsEditingControl(e.OriginalSource) || Keyboard.Modifiers != ModifierKeys.None) return;
+        if (e.Handled || _shutdownStarted || IsEditingControl(e.OriginalSource)) return;
+        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key is Key.Z or Key.Y)
+        {
+            (e.Key == Key.Z ? _viewModel.UndoEditorCommand : _viewModel.RedoEditorCommand).Execute(null); e.Handled = true; return;
+        }
+        if (Keyboard.Modifiers != ModifierKeys.None) return;
         switch (e.Key)
         {
             case Key.Up: _viewModel.NavigateKeyframe(true); break;
             case Key.Down: _viewModel.NavigateKeyframe(false); break;
             case Key.Left: _viewModel.StepBackward(); break;
             case Key.Right: _viewModel.StepForward(); break;
+            case Key.Space: _viewModel.PlayPause(); break;
+            case Key.PageUp: _viewModel.JumpTime(-10); break;
+            case Key.PageDown: _viewModel.JumpTime(10); break;
+            case Key.I: _viewModel.ConfirmInCommand.Execute(null); break;
+            case Key.O: _viewModel.ConfirmOutCommand.Execute(null); break;
+            case Key.OemOpenBrackets: _viewModel.NavigateScene(false); break;
+            case Key.OemCloseBrackets: _viewModel.NavigateScene(true); break;
             default: return;
         }
         e.Handled = true;

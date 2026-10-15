@@ -7,6 +7,16 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M5a editor implementation — 15 October 2026
+
+The #65/#16 increment integrates named intervals, fresh confirmed In/Out, exact rational project
+save/reopen/recovery, bounded history, snapshot export queues and timeline orientation/thumbnails.
+One independent review's concrete state/concurrency findings were corrected. Final canonical CI
+passes 441 cases and rollback checks; native/package gates and the compile-only editor verifier
+pass. [The evidence record](validation/2026-10-15-m5a-editor.md) distinguishes those verified checks
+from the pending, separately agreed visible editor lifecycle. M5a acceptance is not yet established;
+full M1 and later editor/analysis milestones remain separate.
+
 ## M3 integrated stream-copy gate — 15 October 2026
 
 From `c7a792c`, the shared #13/#34/#48 implementation integrates metadata/access-point

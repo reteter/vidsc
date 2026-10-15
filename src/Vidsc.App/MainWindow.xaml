@@ -22,8 +22,11 @@
 
     <!-- Transport controls live outside the Flyleaf video surface on purpose. -->
     <Border DockPanel.Dock="Top" Background="#161C22" Padding="8,6">
-      <StackPanel Orientation="Horizontal">
+      <WrapPanel>
         <Button Content="Open..." Width="88" Margin="0,0,6,0" Click="OnOpenClick" />
+        <Button Content="Project…" Command="{Binding OpenProjectCommand}" Margin="0,0,4,0" />
+        <Button Content="Save" Command="{Binding SaveProjectCommand}" Margin="0,0,4,0" />
+        <Button Content="Recover" Command="{Binding RecoverProjectCommand}" Margin="0,0,8,0" />
         <Button Content="Play / Pause" Width="104" Margin="0,0,6,0" Command="{Binding PlayPauseCommand}" />
         <Button Content="&lt; Frame" Width="78" Margin="0,0,6,0" Command="{Binding StepBackwardCommand}" />
         <Button Content="Frame &gt;" Width="78" Margin="0,0,14,0" Command="{Binding StepForwardCommand}" />
@@ -43,7 +46,7 @@
 
         <Button Content="Packaged CLI check" Width="150" Margin="14,0,6,0" Command="{Binding ToolCheckCommand}" />
         <Button Content="Scene check" Width="110" Command="{Binding SceneCheckCommand}" />
-      </StackPanel>
+      </WrapPanel>
     </Border>
 
     <Border DockPanel.Dock="Bottom" Background="#161C22" Padding="8,6">
@@ -64,14 +67,22 @@
           <Button Content="+" Width="32" Click="OnZoomIn" />
           <Button Content="Fit" Width="48" Click="OnTimelineFit" />
           <Button Content="Center playhead" Width="110" Click="OnTimelineCenter" />
+          <TextBlock Text="{Binding TimelineScaleText}" VerticalAlignment="Center" Margin="8,0" />
           <Button Content="Inspect neighborhood" Margin="12,0,4,0" Command="{Binding InspectNeighborhoodCommand}" />
           <Button Content="Verify inspected access point" Margin="0,0,4,0" Command="{Binding VerifyAccessPointCommand}" ToolTip="Compare a fresh decoder with the full reference for the last inspected candidate. Bounded AVC/HEVC sources up to 16 MiB; no splice or EOF certification." />
           <Button Content="Build keyframes" Margin="0,0,4,0" Command="{Binding BuildKeyframesCommand}" />
           <Button Content="Build frame index" Command="{Binding BuildFrameIndexCommand}" />
           <Button Content="Cancel index" Margin="4,0" Command="{Binding CancelIndexCommand}" />
+          <Button Content="Load visible thumbnails" Command="{Binding LoadThumbnailsCommand}" />
         </WrapPanel>
-        <local:TimelineControl x:Name="Timeline" AutomationProperties.AutomationId="NavigationTimeline" AutomationProperties.Name="Video navigation timeline" PreviewMouseWheel="OnNavigationWheel" Duration="{Binding SliderMaximumTicks}" Position="{Binding DesiredSliderTicks}" Markers="{Binding KeyframeTicks}" />
-        <TextBlock Text="Click/drag: seek • Shift-drag: pan • ↑ / wheel up: next keyframe • ↓ / wheel down: previous • ← / →: frame" Foreground="#9FB3C8" />
+        <local:TimelineControl x:Name="Timeline" AutomationProperties.AutomationId="NavigationTimeline" AutomationProperties.Name="Video navigation timeline" PreviewMouseWheel="OnNavigationWheel" Duration="{Binding SliderMaximumTicks}" Position="{Binding DesiredSliderTicks}" Markers="{Binding KeyframeTicks}" InPosition="{Binding EditorInTicks}" OutPosition="{Binding EditorOutTicks}" />
+        <ScrollBar x:Name="TimelineScroll" Orientation="Horizontal" Minimum="0" SmallChange="10000000" Scroll="OnTimelineScroll" />
+        <ItemsControl ItemsSource="{Binding VisibleThumbnails}" Height="54">
+          <ItemsControl.ItemsPanel><ItemsPanelTemplate><UniformGrid Rows="1" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate><DataTemplate><Image Source="{Binding Image}" Stretch="Uniform" ToolTip="{Binding Label}" /></DataTemplate></ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <TextBlock Text="Space: play/pause • ←/→: frame • PgUp/PgDn: ±10 s • I/O: confirmed In/Out • ↑/↓: access • [/]: scenes • Ctrl+Z/Y: undo/redo" Foreground="#9FB3C8" />
+        <TextBlock Text="Drag I/O handles: requested numeric boundary • Shift-drag: pan • bottom overview: move viewport • thumbnails: advisory only" Foreground="#9FB3C8" />
         <TextBlock Text="Navigation shortcuts work on the video surface and timeline. Text entry, rotation and volume keep their own controls." Foreground="#9FB3C8" />
         <TextBlock Text="{Binding NavigationReason}" TextWrapping="Wrap" Foreground="#F0B429" />
           <TextBlock Text="{Binding InspectionSummary}" TextWrapping="Wrap" Foreground="#9FB3C8" />
@@ -126,6 +137,34 @@
       <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#222C36" />
 
       <TabControl Grid.Column="2" Background="#141A20" BorderBrush="#222C36">
+        <TabItem Header="Segments" IsSelected="True">
+          <ScrollViewer Padding="8"><StackPanel>
+            <TextBlock Text="{Binding SourceSummary}" TextWrapping="Wrap" />
+            <Button Content="New project for current source" Command="{Binding NewProjectCommand}" Margin="0,6" />
+            <TextBlock Text="Segment name" />
+            <TextBox Text="{Binding SegmentName, UpdateSourceTrigger=PropertyChanged}" />
+            <WrapPanel Margin="0,6">
+              <Button Content="In (I)" Command="{Binding ConfirmInCommand}" Margin="0,0,6,0" />
+              <Button Content="Out (O)" Command="{Binding ConfirmOutCommand}" />
+            </WrapPanel>
+            <TextBlock Text="Requested In / Out (UI seconds)" />
+            <StackPanel Orientation="Horizontal"><TextBox Width="125" Text="{Binding CopyStartSeconds, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" /><TextBox Width="125" Text="{Binding CopyEndSeconds, UpdateSourceTrigger=PropertyChanged}" /></StackPanel>
+            <WrapPanel Margin="0,6">
+              <Button Content="Add" Command="{Binding AddSegmentCommand}" />
+              <Button Content="Apply" Command="{Binding ApplySegmentCommand}" Margin="4,0" />
+              <Button Content="Remove" Command="{Binding RemoveSegmentCommand}" />
+              <Button Content="↑" Command="{Binding MoveSegmentUpCommand}" Margin="4,0" />
+              <Button Content="↓" Command="{Binding MoveSegmentDownCommand}" />
+              <Button Content="Undo" Command="{Binding UndoEditorCommand}" Margin="4,0" />
+              <Button Content="Redo" Command="{Binding RedoEditorCommand}" />
+            </WrapPanel>
+            <ListBox ItemsSource="{Binding Segments}" SelectedItem="{Binding SelectedSegment}" DisplayMemberPath="Name" Height="150" />
+            <Button Content="Qualify copy plan" Command="{Binding PreviewCopyCommand}" Margin="0,8,0,0" />
+            <TextBlock Text="{Binding EditorSummary}" TextWrapping="Wrap" Margin="0,8" />
+            <TextBlock Text="{Binding CopyExportSummary}" TextWrapping="Wrap" />
+            <TextBlock Text="Choose tracks, container and destination in Stream copy. Each queued job freezes current interval and choices." TextWrapping="Wrap" Foreground="#9FB3C8" Margin="0,8" />
+          </StackPanel></ScrollViewer>
+        </TabItem>
         <TabItem Header="Position">
           <ScrollViewer Padding="8">
             <StackPanel>
@@ -151,12 +190,11 @@
               <Separator Margin="0,8" />
               <TextBlock Text="Exact editing" Foreground="#9FB3C8" />
               <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                <Button Content="Set In (exact)" Width="110" IsEnabled="{Binding IsExactEditingEnabled}"
+                <Button Content="Set In (exact)" Width="110" Command="{Binding ConfirmInCommand}"
                         ToolTip="{Binding ExactEditingReason}" Margin="0,0,6,0" />
-                <Button Content="Set Out (exact)" Width="110" IsEnabled="{Binding IsExactEditingEnabled}"
+                <Button Content="Set Out (exact)" Width="110" Command="{Binding ConfirmOutCommand}"
                         ToolTip="{Binding ExactEditingReason}" Margin="0,0,6,0" />
-                <Button Content="Export" Width="90" IsEnabled="{Binding IsExactEditingEnabled}"
-                        ToolTip="{Binding ExactEditingReason}" />
+                <Button Content="Copy plan" Width="90" Command="{Binding PreviewCopyCommand}" />
               </StackPanel>
               <TextBlock Text="{Binding ExactEditingReason}" TextWrapping="Wrap" Margin="0,6,0,0" Foreground="#F0B429" />
 
@@ -188,12 +226,15 @@
               <TextBlock Text="Destination (empty opens file chooser; existing files are preserved)" TextWrapping="Wrap" Margin="0,8,0,2" />
               <TextBox Text="{Binding CopyDestination, UpdateSourceTrigger=PropertyChanged}" />
               <WrapPanel Margin="0,8,0,0">
-                <Button Content="Export stream copy" Command="{Binding StartCopyExportCommand}" Margin="0,0,6,4" />
+                <Button Content="Queue stream copy" Command="{Binding StartCopyExportCommand}" Margin="0,0,6,4" />
+                <Button Content="Qualify plan" Command="{Binding PreviewCopyCommand}" Margin="0,0,6,4" />
                 <Button Content="Open validated output" Command="{Binding OpenCopyOutputCommand}" Margin="0,0,6,4" />
                 <Button Content="Cancel export" Command="{Binding CancelCopyExportCommand}" Margin="0,0,6,4" />
                 <Button Content="Reconcile failed worker" Command="{Binding ReconcileCopyWorkerCommand}" Margin="0,0,6,4" />
               </WrapPanel>
               <TextBlock Text="{Binding CopyExportSummary}" TextWrapping="Wrap" Margin="0,8,0,0" />
+              <TextBlock Text="MP4: qualified AAC/AC-3 copied packets, not sample-exact; no subtitles/chapters. Matroska: video/SubRip and chapters; audio timing remains unqualified. Existing destinations are preserved." TextWrapping="Wrap" Foreground="#F0B429" Margin="0,6" />
+              <ItemsControl ItemsSource="{Binding ExportQueue}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Margin="0,6"><TextBlock Text="{Binding Destination}" TextWrapping="Wrap" /><TextBlock Text="{Binding Status}" TextWrapping="Wrap" /></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
             </StackPanel>
           </ScrollViewer>
         </TabItem>
