@@ -167,6 +167,37 @@
           </ScrollViewer>
         </TabItem>
 
+        <TabItem Header="Stream copy">
+          <ScrollViewer Padding="8">
+            <StackPanel>
+              <TextBlock Text="Numeric times resolve forward to observed source frames. The selected copy policy may expand or contract that interval." TextWrapping="Wrap" />
+              <TextBlock Text="In / Out (seconds, decimal point)" Margin="0,8,0,2" />
+              <StackPanel Orientation="Horizontal">
+                <TextBox Width="110" Text="{Binding CopyStartSeconds, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,8,0" />
+                <TextBox Width="110" Text="{Binding CopyEndSeconds, UpdateSourceTrigger=PropertyChanged}" />
+              </StackPanel>
+              <TextBlock Text="Boundary policy / destination container" Margin="0,8,0,2" />
+              <ComboBox ItemsSource="{Binding CopyPolicies}" SelectedItem="{Binding SelectedCopyPolicy}" />
+              <ComboBox ItemsSource="{Binding CopyContainers}" SelectedItem="{Binding SelectedCopyContainer}" Margin="0,4,0,0" />
+              <TextBlock Text="Primary video is retained. Select additional tracks explicitly:" TextWrapping="Wrap" Margin="0,8,0,2" />
+              <ItemsControl ItemsSource="{Binding CopyTracks}">
+                <ItemsControl.ItemTemplate><DataTemplate><CheckBox Content="{Binding Label}" IsChecked="{Binding IsSelected}" /></DataTemplate></ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <CheckBox Content="Preserve intersecting chapters (Matroska)" IsChecked="{Binding PreserveCopyChapters}" Margin="0,6,0,0" />
+              <TextBlock Text="Metadata: Matroska preserves title/language and track flags. MP4 keeps audio language (und if absent), selects the first audio as default if none selected is default, and omits chapters/other metadata. No subtitle conversion." TextWrapping="Wrap" Margin="0,6,0,0" Foreground="#9FB3C8" />
+              <TextBlock Text="Destination (empty opens file chooser; existing files are preserved)" TextWrapping="Wrap" Margin="0,8,0,2" />
+              <TextBox Text="{Binding CopyDestination, UpdateSourceTrigger=PropertyChanged}" />
+              <WrapPanel Margin="0,8,0,0">
+                <Button Content="Export stream copy" Command="{Binding StartCopyExportCommand}" Margin="0,0,6,4" />
+                <Button Content="Open validated output" Command="{Binding OpenCopyOutputCommand}" Margin="0,0,6,4" />
+                <Button Content="Cancel export" Command="{Binding CancelCopyExportCommand}" Margin="0,0,6,4" />
+                <Button Content="Reconcile failed worker" Command="{Binding ReconcileCopyWorkerCommand}" Margin="0,0,6,4" />
+              </WrapPanel>
+              <TextBlock Text="{Binding CopyExportSummary}" TextWrapping="Wrap" Margin="0,8,0,0" />
+            </StackPanel>
+          </ScrollViewer>
+        </TabItem>
+
         <TabItem Header="Diagnostics">
           <ScrollViewer Padding="8">
             <StackPanel>

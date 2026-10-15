@@ -202,6 +202,46 @@ public sealed class MainViewModelTests
         finally { await vm.ShutdownAsync(); }
     }
 
+    [Fact]
+    public async Task ExportCancelsAndDrainsBackgroundInspectionBeforeAnyReplacementWork()
+    {
+        AppPaths paths = NewPaths();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool cancelled = false;
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths,
+            Dispatcher.CurrentDispatcher, (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            async (_, _, _, _, ct) =>
+            {
+                entered.SetResult();
+                using var registration = ct.Register(() => cancelled = true);
+                await release.Task;
+                ct.ThrowIfCancellationRequested();
+                throw new InvalidOperationException();
+            });
+        try
+        {
+            await vm.OpenAsync(Path.Combine(paths.WorkDirectory, "source.mp4"));
+            vm.CopyDestination = Path.Combine(paths.WorkDirectory, "output.mp4");
+            vm.BuildFrameIndexCommand.Execute(null);
+            await entered.Task;
+            Assert.True(vm.StartCopyExportCommand.CanExecute(null));
+            vm.StartCopyExportCommand.Execute(null);
+            Task export = vm.WaitForMediaJobIdleAsync();
+            Assert.True(cancelled);
+            Assert.False(export.IsCompleted);
+            Assert.False(vm.StartCopyExportCommand.CanExecute(null));
+            release.SetResult();
+            await export;
+            Assert.False(vm.IsMediaJobActive);
+            Assert.False(vm.MediaJobStuck);
+            Assert.Null(vm.CopyOutputPath);
+            Assert.Contains("metadata", vm.CopyExportSummary, StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(vm.CopyDestination));
+        }
+        finally { release.TrySetResult(); await vm.ShutdownAsync(); }
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
         DateTime deadline = DateTime.UtcNow + timeout;

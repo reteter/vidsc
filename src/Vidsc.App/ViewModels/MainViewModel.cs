@@ -36,7 +36,7 @@ public sealed record BenchmarkMediaJobResult(string Kind, ToolProcessIdentity? I
     bool Cancelled, bool ExitConfirmed, string? Destination, bool Success = true, string? Error = null,
     bool CleanupConfirmed = true, string? CleanupError = null);
 
-public sealed class MainViewModel : ObservableObject, IDisposable
+public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
     private const int MaxLogLines = 400;
     private const int ApproximateSeekThrottleMilliseconds = 120;
@@ -98,6 +98,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _isMuted;
     private bool _mediaJobActive;
     private bool _mediaJobStuck;
+    private Guid? _retainedMediaJobId;
+    private readonly HashSet<Task> _metadataTasks = [];
     private int _mediaJobRunCount;
     private bool _shutdownRequested;
     private int _volume = 80;
@@ -170,6 +172,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         InspectNeighborhoodCommand = new RelayCommand(() => _mediaJobTask = InspectNeighborhoodAsync(), CanBuildNavigation);
         VerifyAccessPointCommand = new RelayCommand(() => _mediaJobTask = VerifyAccessPointAsync(), CanVerifyAccessPoint);
         CancelIndexCommand = new RelayCommand(() => _indexCancellation?.Cancel(), () => _indexCancellation is not null);
+        InitializeCopyExportCommands();
         RefreshToolsetText();
         RefreshManifestText();
         RefreshDiagnostics();
@@ -265,7 +268,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (NavigationProcessStuckException exception)
         {
-            _mediaJobStuck = true;
+            RetainMediaJob(exception);
             InspectionSummary = $"Verifier process {exception.ProcessId} exit unconfirmed; media jobs remain blocked.";
         }
         catch (OperationCanceledException) { if (opened == _openToken) InspectionSummary = "Verification cancelled; no new evidence published."; }
@@ -339,7 +342,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (NavigationProcessStuckException exception)
         {
-            _mediaJobStuck = true;
+            RetainMediaJob(exception);
             InspectionSummary = $"Inspection process {exception.ProcessId} exit unconfirmed; media jobs remain blocked.";
         }
         catch (OperationCanceledException) { if (generation == _openToken) InspectionSummary = "Inspection cancelled; previous evidence retained."; }
@@ -385,7 +388,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (NavigationProcessStuckException exception)
         {
-            _mediaJobStuck = true;
+            RetainMediaJob(exception);
             NavigationReason = $"Indexer process {exception.ProcessId} has not exited. Media jobs remain blocked; close the app and inspect that process.";
         }
         catch (OperationCanceledException) { if (generation == _openToken) NavigationReason = "Index scan cancelled; build again when needed."; }
@@ -587,7 +590,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
 
         long token = ++_openToken;
-        CancellationTokenSource cancellation = new();
+        CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         CancellationTokenSource? previous = Interlocked.Exchange(ref _openCancellation, cancellation);
         previous?.Cancel();
         previous?.Dispose();
@@ -652,7 +655,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _durationTicks = result.DurationTicks;
             OnPropertyChanged(nameof(SliderMaximumTicks));
 
-            await LoadSourceInfoAsync(path, token, cancellation.Token).ConfigureAwait(true);
+            Task metadataTask = LoadSourceInfoAsync(path, token, cancellation.Token);
+            lock (_metadataTasks) _metadataTasks.Add(metadataTask);
+            try { await metadataTask.ConfigureAwait(true); }
+            finally { lock (_metadataTasks) _metadataTasks.Remove(metadataTask); }
 
             // The probe may have been superseded while it was running; never publish state for a
             // source that is no longer current.
@@ -1008,6 +1014,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         // Cancellation requests termination; awaiting the job confirms its owned child has exited.
         await _mediaJobTask.ConfigureAwait(false);
 
+        // Metadata belongs to source-open operations rather than _mediaJobTask. Drain it before
+        // disposing the application lifetime; queued probes acknowledge cancellation without I/O.
+        Task[] pendingMetadata;
+        lock (_metadataTasks) pendingMetadata = _metadataTasks.ToArray();
+        await Task.WhenAll(pendingMetadata).ConfigureAwait(false);
+
         Task chain;
         lock (_transportLock)
         {
@@ -1122,6 +1134,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
 
     private void ObserveMediaProcess(ToolProcessIdentity identity) => MediaJobProcess = identity;
+
+    private void RetainMediaJob(NavigationProcessStuckException failure)
+    {
+        _mediaJobStuck = true;
+        _retainedMediaJobId = failure.RetainedJobId;
+        IsMediaJobActive = true;
+        RaiseCommandStates();
+    }
+
+    public bool TryReconcileMediaJob()
+    {
+        if (_retainedMediaJobId is not { } job || !MediaWorkerOwnership.TryReconcile(job)) return false;
+        _retainedMediaJobId = null;
+        _mediaJobStuck = false;
+        IsMediaJobActive = false;
+        StatusLine = "Failed worker cleanup confirmed. Media jobs are available again.";
+        RaiseCommandStates();
+        return true;
+    }
 
     private void ConfirmMediaProcess(ToolRunResult result)
     {
@@ -1296,7 +1327,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
             else
             {
-                ToolRunResult probe = await _ffmpeg!.ProbeJsonAsync(path, cancellationToken).ConfigureAwait(true);
+                ToolRunResult probe = await _ffmpeg!.ProbeJsonAsync(path, cancellationToken, ObserveMediaProcess).ConfigureAwait(true);
 
                 if (token != _openToken)
                     return;
@@ -1324,6 +1355,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             }
 
             _mediaInfo = info;
+            RefreshCopyTracks();
             _metadataIdentity = identity;
             OnPropertyChanged(nameof(InspectionCapabilities));
 
@@ -1341,6 +1373,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException)
         {
             // Superseded.
+        }
+        catch (NavigationProcessStuckException exception)
+        {
+            RetainMediaJob(exception);
+            SourceSummary = "Metadata worker exit unconfirmed; media jobs remain blocked.";
         }
         catch (Exception exception)
         {
@@ -1525,6 +1562,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void RaiseCommandStates()
     {
+        StartCopyExportCommand?.RaiseCanExecuteChanged();
+        OpenCopyOutputCommand?.RaiseCanExecuteChanged();
+        ReconcileCopyWorkerCommand?.RaiseCanExecuteChanged();
+        CancelCopyExportCommand?.RaiseCanExecuteChanged();
         _openCommand.RaiseCanExecuteChanged();
         _playPauseCommand.RaiseCanExecuteChanged();
         _stepForwardCommand.RaiseCanExecuteChanged();
