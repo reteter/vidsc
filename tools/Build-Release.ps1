@@ -439,6 +439,9 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_inspection_job.py')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_copy_job.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_audio_copy_job.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_audio_copy.py') -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_accurate_job.py') -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_accurate_codec.py') -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_accurate_audio.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_matroska_copy_job.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_copy_discovery_job.py') -Destination $sceneStage -Force
 
