@@ -1,11 +1,32 @@
 # Implementation progress
 
-Updated: 15 October 2026. Baseline: `e725ace` (M0 bundle and minimal M1 prototype).
+Updated: 16 October 2026. Baseline: `e725ace` (M0 bundle and minimal M1 prototype).
 
 This ledger records verified increments and evidence, not a parallel task backlog.
 [GitHub Issues](https://github.com/reteter/vidsc/issues) is authoritative for current work status,
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
+
+## M5a bounded editor acceptance — 16 October 2026
+
+The explicitly authorized packaged editor trial passes confirmed In/Out, two named intervals,
+history/save/reopen/debounced recovery, viewport/eight thumbnails, async selection isolation,
+sequential validated exports, conflict/source preservation, started source-switch cancellation,
+missing-source refusal and cleanup. The visible check found a ListBox contrast defect; the focused
+style correction and repeated affected visual scenario pass. Final CI passes 441 tests and rollback
+checks. [The evidence record](validation/2026-10-15-m5a-editor.md) identifies the frozen build,
+fixture, checks and limits. This establishes the bounded M5a workflow on accepted M3 capabilities;
+full M1 remains separate. PR #66 awaits review and explicit merge authorization.
+
+## M5a editor implementation — 15 October 2026
+
+The #65/#16 increment integrates named intervals, fresh confirmed In/Out, exact rational project
+save/reopen/recovery, bounded history, snapshot export queues and timeline orientation/thumbnails.
+One independent review's concrete state/concurrency findings were corrected. Final canonical CI
+passes 441 cases and rollback checks; native/package gates and the compile-only editor verifier
+pass. [The evidence record](validation/2026-10-15-m5a-editor.md) distinguishes those verified checks
+from the pending, separately agreed visible editor lifecycle. M5a acceptance is not yet established;
+full M1 and later editor/analysis milestones remain separate.
 
 ## M3 integrated stream-copy gate — 15 October 2026
 

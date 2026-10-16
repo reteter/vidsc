@@ -26,7 +26,7 @@ namespace Vidsc.App.ViewModels;
 /// <item><description>The slider's <i>desired</i> value, the <i>pending</i> request, the engine's
 /// <i>completion echo</i> and the <i>observed presentation</i> are four distinct readouts. The
 /// observed row uses only the qualified presented-frame hook.</description></item>
-/// <item><description>The interval editor and exporter remain separate later stages.</description></item>
+    /// <item><description>Editor boundaries consume fresh presentation evidence; export requalifies immutable edit snapshots.</description></item>
 /// <item><description>At most one owned media job (packaged CLI check or scene check) runs at a time;
 /// both commands are disabled while it runs, and every child process is bound to the lifetime
 /// cancellation token that shutdown cancels.</description></item>
@@ -173,6 +173,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         VerifyAccessPointCommand = new RelayCommand(() => _mediaJobTask = VerifyAccessPointAsync(), CanVerifyAccessPoint);
         CancelIndexCommand = new RelayCommand(() => _indexCancellation?.Cancel(), () => _indexCancellation is not null);
         InitializeCopyExportCommands();
+        InitializeEditor();
         RefreshToolsetText();
         RefreshManifestText();
         RefreshDiagnostics();
@@ -408,11 +409,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public RelayCommand SceneCheckCommand => _sceneCheckCommand;
     public RelayCommand RefreshDiagnosticsCommand => _refreshDiagnosticsCommand;
 
-    /// <summary>Interval editing is a later feature than the qualified read-only playback hook.</summary>
-    public bool IsExactEditingEnabled => false;
+    /// <summary>Advisory command availability; execution reads fresh evidence again.</summary>
+    public bool IsExactEditingEnabled => TryGetConfirmedBoundary(false, out _) && TryGetConfirmedBoundary(true, out _);
 
-    public string ExactEditingReason { get; } =
-        "Exact frame interval editing is unavailable. Use Stream copy for verified export.";
+    public string ExactEditingReason => IsExactEditingEnabled
+        ? "Fresh confirmed In/Out available. Stream-copy export independently qualifies its effective boundaries."
+        : "In/Out require a fresh confirmed frame, verified frame map and matching project source. Numeric edits remain available; export independently qualifies boundaries.";
 
     public string? SceneReason { get; }
 
@@ -590,6 +592,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
 
         long token = ++_openToken;
+        ++_thumbnailVersion;
+        VisibleThumbnails.Clear();
         CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         CancellationTokenSource? previous = Interlocked.Exchange(ref _openCancellation, cancellation);
         previous?.Cancel();
@@ -669,6 +673,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
 
             _sourcePath = path;
+            EditorSourceOpened();
             SetDesiredTicks(0, moveSlider: true, ownTarget: false);
 
             StatusLine = "Ready.";
@@ -867,7 +872,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ? "(current frame boundaries unavailable; build a complete frame index)"
             : $"{TimeText.Format(observed.PresentedStart.ToTicks())} .. {TimeText.Format(observed.PresentedEnd.ToTicks())}";
 
-        ExactEditingText = snapshot.ExactBoundariesEligible ? "eligible" : "disabled";
+        ExactEditingText = IsExactEditingEnabled ? "eligible" : "disabled";
+        OnPropertyChanged(nameof(IsExactEditingEnabled));
+        OnPropertyChanged(nameof(ExactEditingReason));
 
         // Release only after the latest queued intent reached transport and its correlated request
         // completed. A completion echo remains advisory; paused repeated jumps keep their target.
@@ -996,6 +1003,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task ShutdownCoreAsync()
     {
+        _recoveryTimer.Stop();
+        SaveRecovery();
         _shutdownRequested = true;
         RaiseCommandStates();
 
@@ -1462,6 +1471,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             if (result.Process is { } process) ConfirmMediaProcess(process);
             _mediaJobCancellation!.Token.ThrowIfCancellationRequested();
+            if (result.Success) _sceneTicks = result.Scenes.Where(s => s.StartPts.HasValue && s.TimeBaseNumerator.HasValue && s.TimeBaseDenominator.HasValue)
+                .Select(s => checked(new RationalTime(s.StartPts!.Value, Rational.Create(s.TimeBaseNumerator!.Value, s.TimeBaseDenominator!.Value)).ToTicks() - (_mediaInfo?.ContainerStartTicks ?? 0)))
+                .Where(t => t >= 0).Distinct().Order().ToArray();
             AppendLog("SCENE " + result.Describe());
 
             foreach (SceneProposal scene in result.Scenes.Take(10))
@@ -1563,6 +1575,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void RaiseCommandStates()
     {
         StartCopyExportCommand?.RaiseCanExecuteChanged();
+        PreviewCopyCommand?.RaiseCanExecuteChanged();
+        LoadThumbnailsCommand?.RaiseCanExecuteChanged();
         OpenCopyOutputCommand?.RaiseCanExecuteChanged();
         ReconcileCopyWorkerCommand?.RaiseCanExecuteChanged();
         CancelCopyExportCommand?.RaiseCanExecuteChanged();
