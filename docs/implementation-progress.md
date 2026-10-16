@@ -7,6 +7,23 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M8 non-GUI delivery — 16 October 2026
+
+The expanded framework-dependent win-x64 package now checks native/CLI identities,
+the scene runtime input tree and a complete final file inventory, and includes usage
+and actual distribution obligations. After #19 integration, canonical CI passes
+505 tests, integrity and rollback; the frozen package passes non-GUI Release gates
+and clean-location scenes/project/expanded-copy/accurate/no-clobber delivery.
+All fifteen children exit and the 1,978-file inventory remains unchanged. The
+[M8 record](validation/2026-10-16-m8-release.md) identifies the exact product/driver
+builds and limits. The package remains private-local-only;
+GUI/full M1 and public binary redistribution are not certified.
+Review repairs restore the explicitly pending legacy-runtime inventory exception
+while keeping delivery strict, and require clean, unchanged source provenance.
+After PR #76 repair integration, canonical CI passes 517 tests/integrity/rollback;
+the refreshed clean-source Release passes non-GUI package gates. The evidence
+distinguishes this refresh from the original full export-workflow run.
+
 ## M7 non-GUI robustness — 16 October 2026
 
 The [#19](https://github.com/reteter/vidsc/issues/19) increment adds bounded shared

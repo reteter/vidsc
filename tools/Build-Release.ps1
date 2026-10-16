@@ -75,6 +75,7 @@ $PinnedManifestPath = Join-Path $PSScriptRoot 'runtime-manifest.json'
 $PromotionPath = Join-Path $PSScriptRoot 'Promotion.ps1'
 
 . $PromotionPath
+. (Join-Path $PSScriptRoot 'Release-Package.ps1')
 
 $script:StepResults = [System.Collections.Generic.List[object]]::new()
 
@@ -255,11 +256,14 @@ function Invoke-SceneFixture {
 
 Write-Step "Preflight"
 
+$sourceCommit = Get-ReleaseSourceCommit -ProjectRoot $ProjectRoot
+
 if (-not (Test-Path -LiteralPath $PinnedManifestPath)) {
     throw "The pinned runtime manifest is missing: $PinnedManifestPath"
 }
 
 $pinned = Get-Content -LiteralPath $PinnedManifestPath -Raw | ConvertFrom-Json
+if ($RuntimeIdentifier -ne 'win-x64') { throw 'Only the pinned win-x64 runtime bundle is supported.' }
 
 $dotnetCmd = Get-Command dotnet -ErrorAction SilentlyContinue
 if (-not $dotnetCmd) { throw 'The dotnet CLI was not found on PATH.' }
@@ -354,6 +358,7 @@ $missingNative = @($pinned.playback.native.libraries | Where-Object { -not (Test
 if ($missingNative.Count -gt 0) {
     throw "Extracted Flyleaf native set is incomplete. Missing: $($missingNative -join ', ')"
 }
+Assert-PinnedFiles -Root $nativeSrcRoot -Hashes $pinned.playback.native.observedSha256
 
 # --------------------------------------------------------- CLI tool set -----
 
@@ -365,6 +370,7 @@ if (-not (Test-Path -LiteralPath $cliSource)) {
 }
 
 $cliFiles = @($pinned.cli.executables) + @($pinned.cli.sharedLibraries)
+Assert-PinnedFiles -Root $cliSource -Hashes $pinned.cli.observedSha256
 $missingCli = @($cliFiles | Where-Object { -not (Test-Path -LiteralPath (Join-Path $cliSource $_)) })
 if ($missingCli.Count -gt 0) {
     throw "The FFmpeg CLI source is incomplete. Missing: $($missingCli -join ', ')"
@@ -399,6 +405,7 @@ $publishArgs = @(
     '-p:PublishSingleFile=false',
     '-p:DebugType=none',
     '-p:UseAppHost=true',
+    '-m:1',
     '--nologo'
 )
 
@@ -429,6 +436,12 @@ foreach ($file in $cliFiles) {
 }
 
 Copy-Item -LiteralPath $PinnedManifestPath -Destination (Join-Path $appStage 'runtime-manifest.json') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release/NOTICE.md') -Destination (Join-Path $appStage 'NOTICE.md')
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs/distribution.md') -Destination (Join-Path $appStage 'DISTRIBUTION.md')
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs/release-guide.md') -Destination (Join-Path $appStage 'RELEASE-GUIDE.md')
+New-Item -ItemType Directory -Path (Join-Path $appStage 'notices') -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'third_party/FlyleafLib/LICENSE.txt') -Destination (Join-Path $appStage 'notices/Flyleaf-LGPL-3.0.txt')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release/FFmpeg-GPL-3.0.txt') -Destination (Join-Path $appStage 'notices/FFmpeg-GPL-3.0.txt')
 
 $sceneStage = Join-Path $appStage 'scene'
 New-Item -ItemType Directory -Force -Path $sceneStage | Out-Null
@@ -467,18 +480,41 @@ $sceneRelocatable = $false
 
 if (-not $SkipSceneBundle) {
     if ((Test-Path -LiteralPath (Join-Path $relocatableRuntime 'python.exe')) -and (Test-Path -LiteralPath $relocatableManifest)) {
+        if ((Get-SceneRuntimeDigest -Root $relocatableRuntime) -ne $pinned.scene.relocatable.runtimeTreeSha256) {
+            throw 'Scene runtime input tree differs from the pinned snapshot. Rebuild and qualify the exact pinned runtime; do not relabel an arbitrary cached tree.'
+        }
         $sceneTarget = Join-Path $sceneStage 'python'
         Assert-UnderArtifacts -Path $sceneTarget -Purpose 'write' | Out-Null
 
         $robocopy = Invoke-Capture -Executable 'robocopy' -Arguments @(
-            $relocatableRuntime, $sceneTarget, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1'
+            $relocatableRuntime, $sceneTarget, '/E', '/XF', '*.pyc', '/XD', '__pycache__', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1'
         )
 
         if ($robocopy.ExitCode -ge 8) {
             throw "Copying the relocatable scene runtime failed (robocopy exit $($robocopy.ExitCode))."
         }
 
-        Copy-Item -LiteralPath $relocatableManifest -Destination $sceneStage -Force
+        Assert-PinnedFiles -Root $sceneTarget -Hashes ([pscustomobject]@{
+            'python.exe' = $pinned.scene.relocatable.pythonExeSha256
+            $pinned.scene.relocatable.pythonDll = $pinned.scene.relocatable.pythonDllSha256
+        })
+        # Keep packaged workers read-only after first import, including in an expanded bundle.
+        Add-Content -LiteralPath (Join-Path $sceneTarget 'Lib/site-packages/sitecustomize.py') -Value "`n# Packaged workers keep disposable bytecode out of the delivery directory.`nsys.dont_write_bytecode = True"
+        # sitecustomize itself is imported before its policy runs. Generate only that trusted
+        # cache with a neutral embedded filename; discard all untrusted input bytecode above.
+        $null = Invoke-Native -Executable (Join-Path $sceneTarget 'python.exe') -Arguments @('-B', '-c', 'import py_compile,sys; py_compile.compile(sys.argv[1], dfile="sitecustomize.py", doraise=True, invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH)', (Join-Path $sceneTarget 'Lib/site-packages/sitecustomize.py')) -Description 'initialize immutable packaged Python import policy'
+        # Local build reports include machine paths and command logs. Ship only runtime facts.
+        $sceneFacts = Get-Content -LiteralPath $relocatableManifest -Raw | ConvertFrom-Json
+        [ordered]@{ schemaVersion=1; kind=$sceneFacts.kind; interpreter=[ordered]@{
+                implementation=$sceneFacts.interpreter.implementation; version=$sceneFacts.interpreter.version;
+                platform=$sceneFacts.interpreter.platform; machine=$sceneFacts.interpreter.machine;
+                pythonExe='python.exe'; pythonExeSha256=$sceneFacts.interpreter.pythonExeSha256;
+                pythonDll=$sceneFacts.interpreter.pythonDll; pythonDllSha256=$sceneFacts.interpreter.pythonDllSha256;
+                stdlibZip=$sceneFacts.interpreter.stdlibZip; stdlibZipSha256=$sceneFacts.interpreter.stdlibZipSha256
+            };
+            packages=@($pinned.scene.relocatable.installed); importsVerified=$sceneFacts.importsVerified;
+            pyvenvCfgPresent=$sceneFacts.pyvenvCfgPresent; hostPythonRequired=$false } |
+            ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $sceneStage 'scene-runtime-manifest-relocatable.json') -Encoding utf8
         $sceneStatus = 'relocatable'
         $sceneRelocatable = $true
         $sceneRelativePython = 'scene/python/python.exe'
@@ -532,8 +568,6 @@ function New-ObservedManifest {
     Get-ChildItem -LiteralPath $Root -Recurse -File | ForEach-Object {
         $relative = $_.FullName.Substring($Root.Length + 1).Replace('\', '/')
 
-        if ($relative.StartsWith('scene/venv/') -or $relative.StartsWith('scene/python/')) { return }
-
         $files.Add([ordered]@{
                 path      = $relative
                 sizeBytes = $_.Length
@@ -567,11 +601,11 @@ function New-ObservedManifest {
     $document = [ordered]@{
         schemaVersion      = 1
         generatedUtc       = (Get-Date).ToUniversalTime().ToString('O')
-        releaseDirectory   = $Root
+        releaseDirectory   = '.'
         configuration      = $Configuration
         runtimeIdentifier  = $RuntimeIdentifier
         sdkVersion         = $sdkVersion
-        desktopRuntime     = $desktopRuntime
+        desktopRuntime     = ($desktopRuntime -split ' \[')[0]
         flyleafVersion     = $pinned.playback.package.version
         flyleafManagedBuild = [ordered]@{
             informationalVersion = $managedPlayback.ProductVersion
@@ -934,6 +968,14 @@ Assert-UnderArtifacts -Path $ReleaseRoot -Purpose 'replace' | Out-Null
 Assert-UnderArtifacts -Path $StageRelease -Purpose 'move' | Out-Null
 Assert-UnderArtifacts -Path $TrashRoot -Purpose 'write' | Out-Null
 
+# Inventory the final tested bytes, including the complete Python tree, without local build paths.
+# Python can create disposable bytecode on first use, so later verification is an explicit snapshot check.
+if ((Get-ReleaseSourceCommit -ProjectRoot $ProjectRoot) -ne $sourceCommit) {
+    throw 'Package source commit changed during the build; the previous release is preserved.'
+}
+Write-ReleaseInventory -Root $appStage -Commit $sourceCommit -SdkVersion $sdkVersion -SceneRuntimeKind $sceneStatus
+$null = Test-ReleaseInventory -Root $appStage -AllowLegacySceneRuntime:($sceneStatus -eq 'legacy')
+
 # The promotion transaction is extracted into tools/Promotion.ps1 so it can be exercised in
 # isolation; it refuses a failed verification, moves the previous release aside, and restores it on a
 # failed promotion move.
@@ -977,7 +1019,7 @@ $pendingSteps = @($script:StepResults | Where-Object { $_.Status -eq 'pending' }
 if ($pendingSteps.Count -gt 0) {
     Write-Host ''
     Write-Host ("{0} step(s) are PENDING and were NOT verified: {1}" -f $pendingSteps.Count, (($pendingSteps | ForEach-Object { $_.Step }) -join ', ')) -ForegroundColor Yellow
-    Write-Host 'This is not a full M0 pass; the pending gates remain open.' -ForegroundColor Yellow
+    Write-Host 'This build has unverified gates; consult the listed pending checks and delivery evidence.' -ForegroundColor Yellow
 }
 
 $releaseExe = Get-ReleaseExecutable

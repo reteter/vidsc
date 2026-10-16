@@ -42,6 +42,7 @@ try {
     if ($parseFailures.Count) { throw ($parseFailures -join [Environment]::NewLine) }
 
     Invoke-Check -Name 'promotion' -Executable $pwsh -Arguments @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'Test-Promotion.ps1'))
+    Invoke-Check -Name 'release-package' -Executable $pwsh -Arguments @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1'))
     Invoke-Check -Name 'restore' -Executable $dotnet -Arguments @('restore', 'Vidsc.slnx', '--verbosity', 'minimal')
     Invoke-Check -Name 'build' -Executable $dotnet -Arguments @('build', 'Vidsc.slnx', '--configuration', 'Release', '--no-restore', '-m:1', '--verbosity', 'minimal', "-bl:$(Join-Path $runRoot 'build.binlog')")
     Invoke-Check -Name 'test' -Executable $dotnet -Arguments @('test', 'Vidsc.slnx', '--configuration', 'Release', '--no-build', '--no-restore', '-m:1', '--verbosity', 'minimal', '--logger', 'trx', '--results-directory', (Join-Path $runRoot 'tests'))

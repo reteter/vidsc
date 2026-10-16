@@ -26,7 +26,9 @@ frame through its verified end. Numeric seconds and dragged handles are requests
 before qualification. **Qualify copy plan** shows requested, resolved and effective copied ranges.
 Choose tracks/container/destination in **Stream copy**, then queue the current interval; each job
 freezes those choices, runs sequentially and refuses existing destinations. The bounded backend's
-codec/track limits still apply. No accurate-cut editor mode is enabled.
+codec/track limits still apply. Expanded stream copy is the default; optional accurate video uses
+the qualified MP4 AVC/x264 or HEVC Main10/x265 route with explicit full-selected encoding permission.
+See the [Release guide](docs/release-guide.md) for both modes, precision, prerequisites and recovery.
 
 Save/open `.vidsc.json` projects using the toolbar. **Recover** restores the separate debounced
 recovery document, also flushed before export; a missing or changed source retains edits and
@@ -51,8 +53,9 @@ segment edits. Text fields keep their normal keyboard behavior.
 | Python | none required | `tools/Build-Scene-Runtime.ps1` builds the bundled runtime from the **official Windows embeddable** distribution plus project-local wheels; no host Python, venv or global pip is used |
 
 The bundled scene runtime is a **relocatable** embeddable CPython (`scene/python`) with no
-`pyvenv.cfg` and no dependency on a host Python installation. Redistribution clearance is still
-unresolved — see the validation record.
+`pyvenv.cfg` and no dependency on a host Python installation. The complete bundle remains
+**private-local-only**, with public binary redistribution not cleared; see the actual
+[component obligations](docs/distribution.md), including GPL-covered playback native libraries.
 
 ## Build and run
 
@@ -90,7 +93,9 @@ The standalone repository's GitHub Actions workflow runs the same CI entry point
 for pushes and pull requests. See [CI scope and local-test policy](docs/ci.md). GPU presentation,
 runtime-bundle delivery and real-media benchmarks remain separate checks; green CI alone does
 not establish media or delivery acceptance. `tools/Test-Delivery.ps1` runs the manual clean-location
-delivery scenario; check its issue for authorization and prerequisites before execution.
+delivery scenario. `tools/Test-Delivery.ps1 -NonGui` verifies a fresh Unicode/spaced copy with real
+scene/export/project adapters, Windows-only PATH, fresh state and inventory checks before/after.
+It does not launch a window or establish playback acceptance.
 
 ## What the build produces
 
@@ -107,6 +112,8 @@ artifacts/release/app/
   scene/vidsc_scene_job.py      packaged scene-detection driver
   runtime-manifest.json         authored pins (versions, URLs, hashes)
   runtime-manifest.observed.json generated per build: identity + SHA256 of every bundled file
+  package-inventory.json        complete final byte inventory, including the Python runtime
+  RELEASE-GUIDE.md, NOTICE.md, DISTRIBUTION.md, notices/  usage and distribution obligations
 ```
 
 A legacy host-Python `scene/venv/` is only a local-development fallback and is reported as a
@@ -159,8 +166,9 @@ artifacts/          generated output (ignored)
   Flyleaf call never freezes the dispatcher. The Flyleaf WPF host itself stays dispatcher-affine.
 * At most **one owned media job** (packaged CLI check or scene check) runs at a time; both buttons are
   disabled while it runs and every child process is bound to the shutdown cancellation token.
-* **Set In / Set Out / Export are disabled on purpose.** FlyleafLib 3.11.11 publishes no public
-  presented-frame PTS/end, so exact boundaries cannot be honest yet. The reason is shown in the UI.
+* Exact editing uses the qualified local Flyleaf presentation hook and verified frame index.
+  Scene markers and approximate seek echoes remain advisory. Export eligibility and assurance
+  are displayed for the actual plan; unsupported choices fail closed.
 * The Diagnostics tab reports the enumerated DXGI adapters, the actual decoder, whether the decoder is
   hardware-accelerated, the video processor, DWM present/drop counters, the loaded engine version and
   the tool/manifest layout. The Log tab records events.

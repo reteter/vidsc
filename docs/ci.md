@@ -16,6 +16,13 @@ Locally, run the smallest relevant tests after behavior changes; run this full e
 
 ## Efficient media verification
 
+CI also runs `tools/Test-ReleasePackage.ps1`: an isolated intact-inventory check followed by
+tampered-byte, unlisted-file and hidden-file rejection controls. It needs no packaged runtime.
+`tools/Test-Delivery.ps1 -NonGui` is the separate native M8 delivery check: a fresh Unicode/spaced
+copy, Windows-only child PATH, empty extraction/work/temp state, real scenes and both export
+adapters, project-store save/reopen, no-clobber and inventory verification before/after execution.
+It builds its driver outside the package and does not certify GUI/playback or full M1 acceptance.
+
 Before expanding an integration, choose the highest-risk backend contract and a small test with
 explicit acceptance criteria, non-goals and a time/run budget. Do not grow a generic harness while
 the contract remains unproven. Count every attempt and classify its outcome as environment,
