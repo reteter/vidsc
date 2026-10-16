@@ -9,8 +9,15 @@ namespace Vidsc.Core.Projects;
 public sealed record ProjectSource(string Path, string Identity, int VideoStream, long TimelineOriginTicks);
 public sealed record EditorSegment(Guid Id, string Name, RationalTime RequestedStart, RationalTime RequestedEnd,
     ResolvedFrameInterval? Resolved = null);
+public enum ExportMode { StreamCopy, AccurateVideo }
 public sealed record EditorSettings(CopyContainer Container, CopyBoundaryPolicy BoundaryPolicy,
-    int[] SelectedTracks, bool PreserveChapters, string Destination);
+    int[] SelectedTracks, bool PreserveChapters, string Destination)
+{
+    public const string ReferenceQualityPolicy = "accurate-cfr-reference-crf18-slow-v1";
+    public ExportMode Mode { get; init; } = ExportMode.StreamCopy;
+    public string QualityPolicy { get; init; } = ReferenceQualityPolicy;
+    public bool AllowFullSelectedEncode { get; init; }
+}
 public sealed record TimelineViewport(double Start, double Span);
 // Raw draft text may be incomplete or invalid while the accepted segment list remains saveable.
 public sealed record EditorDraft(string Name, string StartText, string EndText,
@@ -20,7 +27,7 @@ public sealed record EditorDraft(string Name, string StartText, string EndText,
 public sealed record EditorProject(int Version, ProjectSource Source, EditorSegment[] Segments,
     EditorSettings Settings, TimelineViewport Viewport)
 {
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
     public EditorDraft? Draft { get; init; }
 }
 
@@ -39,10 +46,14 @@ public static class ProjectJson
     {
         var project = JsonSerializer.Deserialize<EditorProject>(json, Options)
             ?? throw new InvalidDataException("Empty editor project.");
-        if (project.Version != EditorProject.CurrentVersion) throw new InvalidDataException("Unsupported editor project version.");
+        if (project.Version is not (1 or EditorProject.CurrentVersion)) throw new InvalidDataException("Unsupported editor project version.");
+        if (project.Version == 1 && project.Settings is not null)
+            project = project with { Version = EditorProject.CurrentVersion,
+                Settings = project.Settings with { Mode = ExportMode.StreamCopy, QualityPolicy = EditorSettings.ReferenceQualityPolicy, AllowFullSelectedEncode = false } };
         if (project.Source is null || string.IsNullOrWhiteSpace(project.Source.Path) || string.IsNullOrWhiteSpace(project.Source.Identity)
             || project.Source.VideoStream < 0 || project.Settings is null || project.Settings.SelectedTracks is null
             || !Enum.IsDefined(project.Settings.Container) || !Enum.IsDefined(project.Settings.BoundaryPolicy)
+            || !Enum.IsDefined(project.Settings.Mode) || project.Settings.QualityPolicy != EditorSettings.ReferenceQualityPolicy
             || project.Settings.SelectedTracks.Length > 10000 || project.Settings.SelectedTracks.Any(t => t < 0)
             || project.Segments is null || project.Segments.Length > 10000 || project.Segments.Any(s => !ValidSegment(s))
             || (project.Draft is { } draft && (draft.Name is null || draft.Name.Length > 4096

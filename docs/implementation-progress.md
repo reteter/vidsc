@@ -54,6 +54,24 @@ without GUI smoke. [The evidence record](validation/2026-10-16-av1-mkv-copy.md)
 states the finite limits and the EOF/streaming follow-up in #68. This does not
 establish universal AV1 support, exact AV1 smart rendering or full M5b acceptance.
 
+## M5b accurate editor integration — 16 October 2026
+
+The remaining #17 integration adds explicit accurate-video mode, fixed reference
+quality, encode/copy/encode previews and persisted queue intent while keeping
+expanded stream copy as the default. Full-selected encoding requires an additional
+opt-in. Actual packaged editor/project/queue/native export trials pass on AVC,
+authored Main10 and original Main10, including audio timing, both joins,
+quality, cancellation, stale state and no-clobber checks. Canonical CI passes
+473 tests and rollback; non-GUI Release gates pass. The separately authorized
+visible check is recorded in [the evidence record](validation/2026-10-16-m5b-editor.md).
+The visible trial found clipped tab content; the focused layout fix passes CI/package
+and independent review. The user subsequently reports the final manual checklist
+passed, including default-size scrolling, plan preview, GUI save/reopen and AVC/Main10
+export. This completes bounded M5b workflow acceptance; delivery remains in PR #74.
+Review follow-up rejects mismatched accurate output extensions before queue/native
+qualification; the affected regression, canonical CI (474 tests/rollback) and package gates pass.
+Existing qualified backend limits remain; no M1 or universal-format acceptance is claimed.
+
 ## M5a bounded editor acceptance — 16 October 2026
 
 The explicitly authorized packaged editor trial passes confirmed In/Out, two named intervals,

@@ -5,6 +5,7 @@ using Microsoft.Win32;
 using Vidsc.App.Services;
 using Vidsc.Core.Export;
 using Vidsc.Core.Navigation;
+using Vidsc.Core.Projects;
 using Vidsc.Core.Time;
 using Vidsc.Media.Export;
 using Vidsc.Media.Inspection;
@@ -32,13 +33,15 @@ public sealed partial class MainViewModel
     public ObservableCollection<CopyQueueItem> ExportQueue { get; } = [];
     internal sealed record CopySnapshot(string SourcePath, string Identity, long OpenToken, long Generation,
         int Stream, Rational TimeBase, long Origin, RationalTime In, RationalTime Out, CopyBoundaryPolicy Policy,
-        CopyContainer Container, bool Chapters, string Destination, AudioCopySelection[] Audio, int[] Subtitles);
+        CopyContainer Container, bool Chapters, string Destination, AudioCopySelection[] Audio, int[] Subtitles,
+        ExportMode Mode, string QualityPolicy, bool AllowFullSelectedEncode);
     public sealed class CopyQueueItem : ObservableObject
     {
         private string _status = "Queued";
         internal readonly CopySnapshot Snapshot;
         internal CopyQueueItem(CopySnapshot snapshot) { Snapshot = snapshot; Destination = snapshot.Destination; }
         public string Destination { get; }
+        public ExportMode Mode => Snapshot.Mode;
         public string Status { get => _status; internal set => SetProperty(ref _status, value); }
         public string? OutputPath { get; internal set; }
         internal bool IsFinished { get; set; }
@@ -52,6 +55,41 @@ public sealed partial class MainViewModel
     public IReadOnlyList<CopyBoundaryPolicy> CopyPolicies { get; } = Enum.GetValues<CopyBoundaryPolicy>();
     public IReadOnlyList<CopyContainer> CopyContainers { get; } = Enum.GetValues<CopyContainer>();
     public ObservableCollection<ExportTrackChoice> CopyTracks { get; } = [];
+    private ExportMode _exportMode;
+    private bool _allowFullSelectedEncode;
+    public ExportMode SelectedExportMode { get => _exportMode; set { if (SetProperty(ref _exportMode, value)) { CopyExportSummary = "Settings changed. Qualify the current export plan."; RefreshExportEligibility(); } } }
+    public bool AllowFullSelectedEncode { get => _allowFullSelectedEncode; set => SetProperty(ref _allowFullSelectedEncode, value); }
+    public IReadOnlyList<ExportMode> ExportModes { get; } = Enum.GetValues<ExportMode>();
+    public string AccurateQualityPolicy => EditorSettings.ReferenceQualityPolicy;
+    public string ExportEligibility => SelectedExportMode == ExportMode.StreamCopy
+        ? "Stream copy: selected boundary policy applies; no video is re-encoded."
+        : AccurateEligibilityReason() ?? "Accurate video requires native qualification of this exact interval. Reference CRF 18 / slow; no alternative quality profile is qualified. Audio uses intersecting copied packets, never sample-exact. MP4 omits chapters and subtitles.";
+    private void RefreshExportEligibility() => OnPropertyChanged(nameof(ExportEligibility));
+
+    private string? AccurateEligibilityReason()
+    {
+        if (!IsProjectBound()) return "Accurate video unavailable: project source is missing or changed.";
+        if (!AccurateCutVerifier.TryCreate(_toolset, out _, out var reason)) return reason;
+        if (SelectedCopyContainer != CopyContainer.Mp4) return "Accurate video requires MP4 output.";
+        if (AccurateDestinationReason(CopyDestination) is { } destinationReason) return destinationReason;
+        if (!string.Equals(Path.GetExtension(_sourcePath), ".mp4", StringComparison.OrdinalIgnoreCase)) return "Accurate video currently requires an MP4 source.";
+        if (PreserveCopyChapters) return "Accurate video omits chapters. Explicitly uncheck Preserve chapters to continue.";
+        if (CopyTracks.Any(t => t.IsSelected && !t.IsAudio)) return "Accurate video does not support subtitles. Explicitly deselect them; no conversion is performed.";
+        var selected = CopyTracks.Where(t => t.IsSelected && t.IsAudio).ToArray();
+        if (selected.Length > 2 || selected.Any(t => t.Codec is not ("aac" or "ac3")
+            || _mediaInfo!.Streams.Single(s => s.Index == t.StreamIndex) is not { SampleRate: 48000, Channels: 6 }))
+            return "Accurate video supports at most two selected 48-kHz 5.1 AAC/AC-3 tracks. Explicitly deselect unsupported tracks; no conversion is performed.";
+        if (_mediaInfo?.PrimaryVideo is not { } video || video.CodecName is not ("h264" or "hevc")
+            || video.Width <= 0 || video.Height <= 0 || (long)video.Width * video.Height > 1920 * 1080 || video.RotationDegrees != 0
+            || (video.CodecName == "h264" && video.PixelFormat != "yuv420p")
+            || (video.CodecName == "hevc" && video.PixelFormat != "yuv420p10le"))
+            return "Accurate video requires the qualified AVC 8-bit / HEVC Main10 representation, up to 1920×1080 without rotation. No fallback conversion is performed.";
+        return null;
+    }
+    private static string? AccurateDestinationReason(string destination) => !string.IsNullOrWhiteSpace(destination)
+        && !string.Equals(Path.GetExtension(destination), ".mp4", StringComparison.OrdinalIgnoreCase)
+            ? "Accurate video requires an explicit .mp4 destination. Correct the destination path before qualifying or exporting."
+            : null;
     public RelayCommand StartCopyExportCommand { get; private set; } = null!;
     public RelayCommand OpenCopyOutputCommand { get; private set; } = null!;
     public RelayCommand ReconcileCopyWorkerCommand { get; private set; } = null!;
@@ -85,18 +123,25 @@ public sealed partial class MainViewModel
         {
             var choice = new ExportTrackChoice(stream.Index, stream.CodecName,
                 $"{stream.CodecType}: {stream.CodecName} {stream.Language ?? "und"} {stream.ChannelLayout}", stream.IsAudio);
-            choice.PropertyChanged += (_, _) =>
+            choice.PropertyChanged += (_, e) =>
             {
+                if (e.PropertyName != nameof(ExportTrackChoice.IsSelected)) return;
                 if (IsProjectBound()) _projectTrackSelection = CopyTracks.Where(t => t.IsSelected).Select(t => t.StreamIndex).ToArray();
                 ScheduleRecovery();
+                RefreshExportEligibility();
+                CopyExportSummary = "Settings changed. Qualify the current export plan.";
             };
             CopyTracks.Add(choice);
         }
+        RefreshExportEligibility();
+        CopyExportSummary = "Source changed. Qualify the current export plan.";
     }
 
-    private CopySnapshot CaptureCopySnapshot(bool chooseDestination)
+    internal CopySnapshot CaptureCopySnapshot(bool chooseDestination)
     {
         RequireProjectBinding();
+        if (SelectedExportMode == ExportMode.AccurateVideo && AccurateEligibilityReason() is { } reason)
+            throw new InvalidOperationException(reason);
         if (chooseDestination && string.IsNullOrWhiteSpace(CopyDestination))
         {
             var dialog = new SaveFileDialog { Filter = SelectedCopyContainer == CopyContainer.Mp4 ? "MP4 video|*.mp4" : "Matroska video|*.mkv",
@@ -104,6 +149,8 @@ public sealed partial class MainViewModel
             if (dialog.ShowDialog() != true) throw new OperationCanceledException("Destination selection cancelled.");
             CopyDestination = dialog.FileName;
         }
+        if (SelectedExportMode == ExportMode.AccurateVideo && AccurateDestinationReason(CopyDestination) is { } destinationReason)
+            throw new InvalidOperationException(destinationReason);
         var video = _mediaInfo!.PrimaryVideo!;
         var selected = CopyTracks.Where(t => t.IsSelected).ToArray();
         var start = EditorUiBoundary(false) ?? throw new ArgumentException("Invalid In time.");
@@ -113,7 +160,7 @@ public sealed partial class MainViewModel
             video.Index, video.TimeBase!.Value, _mediaInfo.ContainerStartTicks ?? 0, start, end, SelectedCopyPolicy,
             SelectedCopyContainer, PreserveCopyChapters, CopyDestination,
             selected.Where(t => t.IsAudio).Select(t => new AudioCopySelection(t.StreamIndex, t.Codec)).ToArray(),
-            selected.Where(t => !t.IsAudio).Select(t => t.StreamIndex).ToArray());
+            selected.Where(t => !t.IsAudio).Select(t => t.StreamIndex).ToArray(), SelectedExportMode, AccurateQualityPolicy, AllowFullSelectedEncode);
     }
 
     public void QueueCopyExport()
@@ -178,6 +225,8 @@ public sealed partial class MainViewModel
         bool delegated = false;
         try
         {
+            if (snapshot.Mode == ExportMode.AccurateVideo)
+                return await ExportAccurateCoreAsync(snapshot);
             var video = _mediaInfo?.PrimaryVideo;
             if (video?.TimeBase is not { IsPositive: true } tb || _metadataIdentity is null)
                 throw new InvalidOperationException("Reopen source metadata before exporting.");
@@ -203,7 +252,7 @@ public sealed partial class MainViewModel
                 selectedContainer == CopyContainer.Matroska ? new(subtitles, preserveChapters, audio) : null);
         }
         catch (NavigationProcessStuckException error) { RetainMediaJob(error); CopyExportSummary = error.Message; }
-        catch (Exception error) { CopyExportSummary = error is OperationCanceledException ? "Stream-copy export cancelled." : error.Message; }
+        catch (Exception error) { CopyExportSummary = error is OperationCanceledException ? "Export cancelled." : error.Message; }
         finally { if (!delegated) EndMediaJob(); }
         return null;
     }
@@ -221,13 +270,24 @@ public sealed partial class MainViewModel
     private async Task PreviewCopyCoreAsync()
     {
         bool owned = false;
+        CopySnapshot? previewSnapshot = null;
         try
         {
             var previewSegmentId = SelectedSegment?.Id;
             string previewName = SegmentName;
             var snapshot = CaptureCopySnapshot(false);
+            previewSnapshot = snapshot;
             if (!TryBeginMediaJob()) throw new InvalidOperationException("Wait for the current media job before previewing.");
             owned = true;
+            if (snapshot.Mode == ExportMode.AccurateVideo)
+            {
+                if (!AccurateCutVerifier.TryCreate(_toolset, out var accurate, out var reason)) throw new InvalidOperationException(reason);
+                CopyExportSummary = "Qualifying accurate video regions, quality and copied audio…";
+                var plan = await Task.Run(() => accurate!.QualifyAsync(snapshot.SourcePath, CreateAccurateRequest(snapshot), _mediaJobCancellation!.Token, ObserveMediaProcess));
+                if (!SnapshotCurrent(snapshot)) throw new OperationCanceledException("Source changed.");
+                if (PreviewSettingsCurrent(snapshot)) CopyExportSummary = DescribeAccuratePlan(snapshot, plan);
+                return;
+            }
             if (!CopyRangeDiscovery.TryCreate(_toolset, out var discovery) || !FiniteCopyVerifier.TryCreate(_toolset, out var verifier, out _))
                 throw new InvalidOperationException("Bundled qualification runtime is unavailable.");
             var identity = new ProgressiveSourceIdentity(snapshot.Identity, snapshot.Generation, snapshot.Stream, snapshot.TimeBase, snapshot.Origin);
@@ -238,6 +298,7 @@ public sealed partial class MainViewModel
             if (!SnapshotCurrent(snapshot)) throw new OperationCanceledException("Source changed.");
             if (!CopyBoundaryPlanner.TryPropose(video.ToObservation().Binding, found.Requested, snapshot.Policy, [video.ToObservation()], out var proposal))
                 throw new InvalidOperationException("Verified range does not satisfy this copy policy.");
+            if (!PreviewSettingsCurrent(snapshot)) return;
             CopyExportSummary = $"All video copied; no re-encoded portions. Requested {found.Requested.Start.Requested.AsSeconds()}–{found.Requested.End.Requested.AsSeconds()} source s; frame resolved {found.Requested.Start.Resolved.AsSeconds()}–{found.Requested.End.Resolved.AsSeconds()} s; effective copy {proposal!.ResolvedInterval.Start.AsSeconds()}–{proposal.ResolvedInterval.End.AsSeconds()} s; total deltas {proposal.TotalStartDeltaSeconds}/{proposal.TotalEndDeltaSeconds} s. Export requalifies tracks and boundaries.";
             if (SelectedSegment is { } selected && selected.Id == previewSegmentId
                 && SegmentName == previewName
@@ -252,7 +313,11 @@ public sealed partial class MainViewModel
             }
         }
         catch (NavigationProcessStuckException error) { RetainMediaJob(error); CopyExportSummary = error.Message; }
-        catch (Exception error) { CopyExportSummary = error is OperationCanceledException ? "Plan preview cancelled." : error.Message; }
+        catch (Exception error)
+        {
+            if (previewSnapshot is null || PreviewSettingsCurrent(previewSnapshot))
+                CopyExportSummary = error is OperationCanceledException ? "Plan preview cancelled." : error.Message;
+        }
         finally { if (owned) EndMediaJob(); }
     }
 
