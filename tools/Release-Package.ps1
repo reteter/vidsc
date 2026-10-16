@@ -1,4 +1,17 @@
 # Shared package identity checks; no build, download or launch side effects.
+function Get-ReleaseSourceCommit {
+    param([string]$ProjectRoot)
+    $commit = & git -C $ProjectRoot rev-parse --verify HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the package source commit.' }
+    # SDK default globs can include new source files, so untracked, non-ignored inputs matter too.
+    $changes = @(& git -C $ProjectRoot status --porcelain=v1 --untracked-files=all --ignore-submodules=none)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot verify package source cleanliness.' }
+    if ($changes.Count) {
+        throw 'Release packaging requires a clean tracked worktree and no untracked, non-ignored files. Commit or remove source changes first; the previous release is preserved.'
+    }
+    return ($commit | Select-Object -First 1).Trim()
+}
+
 function Assert-NoPackageReparsePoints {
     param([string]$Root)
     $items = @((Get-Item -LiteralPath $Root)) + @(Get-ChildItem -LiteralPath $Root -Recurse -Force)
@@ -36,21 +49,22 @@ function Get-SceneRuntimeDigest {
 }
 
 function Write-ReleaseInventory {
-    param([string]$Root, [string]$Commit, [string]$SdkVersion)
+    param([string]$Root, [string]$Commit, [string]$SdkVersion,
+        [ValidateSet('relocatable', 'legacy', 'missing')][string]$SceneRuntimeKind = 'missing')
     Assert-NoPackageReparsePoints -Root $Root
     $files = @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
         $relative = [IO.Path]::GetRelativePath($Root, $_.FullName).Replace('\', '/')
         if ($relative -eq 'package-inventory.json') { return }
         [ordered]@{ path=$relative; sizeBytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
     })
-    [ordered]@{ schemaVersion=1; sourceCommit=$Commit; sdkVersion=$SdkVersion;
+    [ordered]@{ schemaVersion=1; sourceCommit=$Commit; sdkVersion=$SdkVersion; sceneRuntimeKind=$SceneRuntimeKind;
         runtimeIdentifier='win-x64'; frameworkDependent=$true; extraction='none; expanded directory bundle';
         redistributionEligible=$false; files=$files } | ConvertTo-Json -Depth 5 |
         Set-Content -LiteralPath (Join-Path $Root 'package-inventory.json') -Encoding utf8
 }
 
 function Test-ReleaseInventory {
-    param([string]$Root)
+    param([string]$Root, [switch]$AllowLegacySceneRuntime)
     $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\','/')
     $manifest = Get-Content -LiteralPath (Join-Path $rootPath 'package-inventory.json') -Raw | ConvertFrom-Json
     if ($manifest.schemaVersion -ne 1 -or !$manifest.frameworkDependent -or $manifest.runtimeIdentifier -ne 'win-x64') {
@@ -74,8 +88,17 @@ function Test-ReleaseInventory {
         $relative = [IO.Path]::GetRelativePath($rootPath, $file.FullName).Replace('\', '/')
         if ($relative -ne 'package-inventory.json' -and !$seen.Contains($relative)) { throw "Unlisted package file: $relative" }
     }
-    foreach ($runtime in @('coreclr.dll','hostfxr.dll','System.Private.CoreLib.dll','pyvenv.cfg')) {
+    foreach ($runtime in @('coreclr.dll','hostfxr.dll','System.Private.CoreLib.dll')) {
         if (@(Get-ChildItem -LiteralPath $rootPath -Recurse -File -Force -Filter $runtime).Count) { throw "Unexpected bundled runtime/configuration: $runtime" }
+    }
+    foreach ($config in Get-ChildItem -LiteralPath $rootPath -Recurse -File -Force -Filter 'pyvenv.cfg') {
+        $relative = [IO.Path]::GetRelativePath($rootPath, $config.FullName).Replace('\', '/')
+        # The legacy development fallback is host-dependent; production callers remain strict.
+        $kind = $manifest.PSObject.Properties['sceneRuntimeKind']
+        if (!$AllowLegacySceneRuntime -or $null -eq $kind -or $kind.Value -ne 'legacy' -or
+            $relative -cne 'scene/venv/pyvenv.cfg') {
+            throw 'Unexpected bundled runtime/configuration: pyvenv.cfg'
+        }
     }
     return $manifest
 }

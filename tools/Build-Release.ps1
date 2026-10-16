@@ -256,6 +256,8 @@ function Invoke-SceneFixture {
 
 Write-Step "Preflight"
 
+$sourceCommit = Get-ReleaseSourceCommit -ProjectRoot $ProjectRoot
+
 if (-not (Test-Path -LiteralPath $PinnedManifestPath)) {
     throw "The pinned runtime manifest is missing: $PinnedManifestPath"
 }
@@ -968,10 +970,11 @@ Assert-UnderArtifacts -Path $TrashRoot -Purpose 'write' | Out-Null
 
 # Inventory the final tested bytes, including the complete Python tree, without local build paths.
 # Python can create disposable bytecode on first use, so later verification is an explicit snapshot check.
-$sourceCommit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Cannot identify the package source commit.' }
-Write-ReleaseInventory -Root $appStage -Commit $sourceCommit -SdkVersion $sdkVersion
-$null = Test-ReleaseInventory -Root $appStage
+if ((Get-ReleaseSourceCommit -ProjectRoot $ProjectRoot) -ne $sourceCommit) {
+    throw 'Package source commit changed during the build; the previous release is preserved.'
+}
+Write-ReleaseInventory -Root $appStage -Commit $sourceCommit -SdkVersion $sdkVersion -SceneRuntimeKind $sceneStatus
+$null = Test-ReleaseInventory -Root $appStage -AllowLegacySceneRuntime:($sceneStatus -eq 'legacy')
 
 # The promotion transaction is extracted into tools/Promotion.ps1 so it can be exercised in
 # isolation; it refuses a failed verification, moves the previous release aside, and restores it on a

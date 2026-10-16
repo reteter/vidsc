@@ -72,6 +72,15 @@ under `artifacts/trash`. `run.bat` always rebuilds and then launches the new rel
 Build inputs are the SDK policy in `global.json`, authored native/CLI hashes and pinned embedded
 Python/wheels. Build prerequisites additionally include PowerShell 7, 7-Zip, network/cache access
 and the pinned CLI build input at the manifest's configured directory. No global pip is used.
+Commit source changes before packaging: preflight requires a clean tracked worktree and no
+untracked, non-ignored files (including new SDK source-glob inputs). Ignored build/runtime outputs
+are allowed. The build rechecks cleanliness and the same commit before promotion, so the inventory
+never attributes known dirty source bytes to `HEAD`; an early refusal preserves existing outputs.
+
+If only the legacy `scene/venv` runtime is available, the development fallback still builds with a
+pending scene gate and records `sceneRuntimeKind: legacy`. Only that build's explicit legacy
+inventory check permits `scene/venv/pyvenv.cfg`. The default inventory/delivery check rejects it;
+the fallback is host-dependent and does not satisfy relocatable production delivery acceptance.
 
 ```powershell
 pwsh -NoProfile -File tools/Build-Scene-Runtime.ps1
