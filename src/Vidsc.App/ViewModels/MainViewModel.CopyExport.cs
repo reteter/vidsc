@@ -187,7 +187,8 @@ public sealed partial class MainViewModel
             if (subtitles.Any(index => _mediaInfo!.Streams.Single(t => t.Index == index).CodecName != "subrip")) throw new InvalidOperationException("Only native SubRip subtitle copy is qualified.");
             if (selectedContainer == CopyContainer.Mp4 && subtitles.Length > 0)
                 throw new InvalidOperationException("Choose Matroska for SubRip/chapters, or explicitly deselect them. No conversion is performed.");
-            if (selectedContainer == CopyContainer.Matroska && audio.Any(a => a.CodecName != "eac3"))
+            if (selectedContainer == CopyContainer.Matroska && audio.Any(a => a.CodecName != "eac3"
+                && !(video.CodecName is "h264" or "hevc" && a.CodecName is "aac" or "ac3")))
                 throw new InvalidOperationException("Matroska audio copy currently qualifies ordinary 48-kHz stereo/5.1 E-AC-3. Deselect other audio tracks or choose a supported container; no conversion is performed.");
             if (selectedContainer != CopyContainer.Matroska && video.CodecName == "av1")
                 throw new InvalidOperationException("Choose Matroska output for AV1 stream copy.");
@@ -293,7 +294,9 @@ public sealed partial class MainViewModel
                 throw new InvalidOperationException(reason);
             PacketAudioCopyVerifier.TryCreate(_toolset, out var audioVerifier, out reason);
             MatroskaCopyVerifier.TryCreate(_toolset, out var matroskaVerifier, out _);
-            if (selectedAudio.Count > 0 && audioVerifier is null) throw new InvalidOperationException(reason);
+            if (selectedAudio.Count > 0 && !request.Streaming && audioVerifier is null) throw new InvalidOperationException(reason);
+            if (request.Streaming)
+                matroska ??= new([], false, selectedAudio, CopyContainer.Mp4);
             string source = _sourcePath!;
             var video = await Task.Run(() => finite!.QualifyAsync(source, request, Guid.NewGuid(),
                 cancellation.Token, ObserveMediaProcess), cancellation.Token);

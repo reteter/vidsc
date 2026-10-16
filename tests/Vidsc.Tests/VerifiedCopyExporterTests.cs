@@ -10,6 +10,21 @@ namespace Vidsc.Tests;
 public sealed class VerifiedCopyExporterTests
 {
     [Fact]
+    public async Task StreamingVideoRequiresNativeContainerAdapterBeforeSourceIo()
+    {
+        var request = new FiniteCopyRequest(new("unopened", 1, 0, Rational.Create(1, 3), 0), "h264", 0, 1, 1, 2, Streaming: true);
+        var qualified = new QualifiedCopyRange(request, "hash", "config", "manifest", "build", null);
+        var interval = new ResolvedFrameInterval(new(new(1, request.Source.TimeBase), new(1, request.Source.TimeBase)),
+            new(new(2, request.Source.TimeBase), new(2, request.Source.TimeBase)));
+        var proposal = new CopyBoundaryProposal(interval, qualified.ToObservation());
+        var exporter = new VerifiedCopyExporter(new("unused", "unused"), new FfmpegCli("unused", "unused"));
+        var result = await exporter.ExportVideoOnlyAsync("absent-source", qualified, proposal, "output.mp4", "unused", default);
+        Assert.False(result.Success);
+        Assert.Contains("mapping verifier is unavailable", result.Error);
+        Assert.Null(result.JournalPath);
+    }
+
+    [Fact]
     public async Task InvalidSeekIsRefusedBeforeSourceOrTransactionIo()
     {
         var tb = Rational.Create(1, 3);

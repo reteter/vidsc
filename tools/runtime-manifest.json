@@ -140,8 +140,8 @@
 
   "matroskaCopy": {
     "worker": "scene/vidsc_matroska_copy_job.py",
-    "helpers": ["scene/vidsc_copy_job.py", "scene/vidsc_inspection_job.py", "scene/vidsc_av1_codec.py", "scene/vidsc_matroska_audio.py"],
-    "qualification": "Finite AV1 Main 8-bit single-layer copy with decoded presentation identity; independent-program 48-kHz stereo/5.1 E-AC-3; existing bounded source/runtime budgets apply"
+    "helpers": ["scene/vidsc_copy_job.py", "scene/vidsc_inspection_job.py", "scene/vidsc_av1_codec.py", "scene/vidsc_matroska_audio.py", "scene/vidsc_nal_streaming.py", "scene/vidsc_audio_streaming.py", "scene/vidsc_audio_copy.py"],
+    "qualification": "Streaming AVC/HEVC native packet and presentation identity, including independently drained source EOF; exact 48-kHz 5.1 AAC/AC-3 context proof. Existing AV1 Main 8-bit and independent-program stereo/5.1 E-AC-3 remain separate policies. Streaming limits: 64 GiB output, six hours, ten million packets, 300 seconds wall time, 16 MiB individual packets, 2073600 pixels, two decoder threads."
   },
 
   "accurateCut": {
