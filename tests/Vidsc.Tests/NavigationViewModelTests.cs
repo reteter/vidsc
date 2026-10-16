@@ -20,6 +20,35 @@ public sealed class NavigationViewModelTests
     private static NavigationMap Map() => new(Rational.Create(1, 1000), 0, [0, 40, 130], [0, 1000, 2000]);
 
     [Theory]
+    [InlineData(true, 40, true)]
+    [InlineData(false, 40, false)]
+    [InlineData(true, 41, false)]
+    public async Task SceneConversionRequiresExplicitActionAndMatchingIndependentFrameBoundaries(bool observedEnd, long endPts, bool accepted)
+    {
+        var paths = NewPaths(); string source = Path.Combine(paths.WorkDirectory, "proposal-source.bin");
+        File.WriteAllBytes(source, [1, 2, 3]);
+        var proposal = new SceneProposal(0, 0, 1, 0, endPts / 1000d) { StartPts = 0, EndPts = endPts,
+            TimeBaseNumerator = 1, TimeBaseDenominator = 1000, EndIsPresentationBoundary = observedEnd };
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithStubCli(paths), paths, Dispatcher.CurrentDispatcher,
+            (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)),
+            (_, _, _, _, _) => Task.FromResult(Map()),
+            sceneOverride: (_, _) => Task.FromResult(new SceneJobResult(true, null, source, "content", 27, "pyav", null, "pts", [proposal], null, null)));
+        try
+        {
+            await vm.OpenAsync(source);
+            vm.SceneCheckCommand.Execute(null); await vm.WaitForMediaJobIdleAsync();
+            Assert.Single(vm.SceneProposals); Assert.Empty(vm.Segments);
+            Assert.Throws<InvalidOperationException>(vm.ConvertSelectedScene);
+            vm.BuildFrameIndexCommand.Execute(null); await vm.WaitForMediaJobIdleAsync();
+            if (accepted) { vm.ConvertSelectedScene(); Assert.Single(vm.Segments); Assert.NotNull(vm.Segments[0].Resolved); }
+            else { Assert.Throws<InvalidOperationException>(vm.ConvertSelectedScene); Assert.Empty(vm.Segments); }
+            await vm.OpenAsync(source);
+            Assert.Empty(vm.SceneProposals); Assert.Null(vm.SelectedSceneProposal);
+        }
+        finally { await vm.ShutdownAsync(); }
+    }
+
+    [Theory]
     [InlineData("missing", true, false)]
     [InlineData("failed", true, false)]
     [InlineData("no-video", true, false)]

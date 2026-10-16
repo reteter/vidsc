@@ -17,25 +17,37 @@ public sealed partial class MainViewModel
         long version = ++_thumbnailVersion, sourceToken = _openToken;
         var viewport = _viewport;
         _indexCancellation = _mediaJobCancellation;
+        CancelIndexCommand.RaiseCanExecuteChanged();
         VisibleThumbnails.Clear();
         try
         {
             var token = _mediaJobCancellation!.Token;
-            for (int i = 0; i < 8; i++)
+            long[] targets = Enumerable.Range(0, 8).Select(i => (long)Math.Clamp(
+                viewport.Start + (i + .5) * viewport.Span / 8, 0, Math.Max(0, _durationTicks - 1))).ToArray();
+            double origin = (_mediaInfo.ContainerStartTicks ?? 0) / (double)TimeSpan.TicksPerSecond;
+            int streamIndex = video.Index;
+            var toolset = _toolset;
+            string cache = _paths.CacheDirectory;
+            var thumbnails = await Task.Run(() => VisibleThumbnailWorker.ReadBatchAsync(toolset, source, streamIndex,
+                origin, sourceToken, targets, cache, token, ObserveMediaProcess), token);
+            token.ThrowIfCancellationRequested();
+            if (version != _thumbnailVersion || sourceToken != _openToken || viewport != _viewport || !source.MatchesCurrentFile()) return;
+            foreach (var thumbnail in thumbnails)
             {
-                long ticks = (long)Math.Clamp(viewport.Start + (i + .5) * viewport.Span / 8, 0, Math.Max(0, _durationTicks - 1));
-                byte[] bytes = await VisibleThumbnailWorker.ReadAsync(_ffmpeg, source, video.Index, ticks, _paths.CacheDirectory, token, ObserveMediaProcess);
-                token.ThrowIfCancellationRequested();
-                if (version != _thumbnailVersion || sourceToken != _openToken) return;
-                using var stream = new MemoryStream(bytes);
+                using var stream = new MemoryStream(thumbnail.Jpeg);
                 var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
-                VisibleThumbnails.Add(new(bitmap, Vidsc.Core.Time.TimeText.Format(ticks)));
+                long actual = checked((long)((decimal)thumbnail.Pts * thumbnail.TimeBaseNumerator * TimeSpan.TicksPerSecond / thumbnail.TimeBaseDenominator - (decimal)origin * TimeSpan.TicksPerSecond));
+                VisibleThumbnails.Add(new(bitmap, Vidsc.Core.Time.TimeText.Format(actual)));
             }
-            StatusLine = "Visible thumbnails loaded (advisory seek positions).";
+            StatusLine = "Visible thumbnails loaded (decoded PTS; advisory previews).";
         }
-        catch (NavigationProcessStuckException error) { RetainMediaJob(error); StatusLine = error.Message; }
-        catch (OperationCanceledException) { StatusLine = "Obsolete thumbnail work cancelled."; }
-        catch (Exception error) { StatusLine = "Thumbnail preview failed: " + error.Message; }
-        finally { _indexCancellation = null; EndMediaJob(); }
+        catch (NavigationProcessStuckException error)
+        {
+            RetainMediaJob(error);
+            if (sourceToken == _openToken) StatusLine = error.Message;
+        }
+        catch (OperationCanceledException) { if (sourceToken == _openToken) StatusLine = "Obsolete thumbnail work cancelled."; }
+        catch (Exception error) { if (sourceToken == _openToken) StatusLine = "Thumbnail preview failed: " + error.Message; }
+        finally { _indexCancellation = null; EndMediaJob(); CancelIndexCommand.RaiseCanExecuteChanged(); }
     }
 }

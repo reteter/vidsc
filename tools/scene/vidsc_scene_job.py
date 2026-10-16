@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--generation", type=int, default=0)
     parser.add_argument("--stream", type=int, default=0)
     parser.add_argument("--origin", type=float, default=0)
-    parser.add_argument("--detector", choices=["content", "adaptive"], default="content")
+    parser.add_argument("--detector", choices=["content", "adaptive", "fade"], default="content")
     parser.add_argument("--threshold", type=float, default=27)
     parser.add_argument("--min-scene-len", type=int, default=15)
     parser.add_argument("--start", type=float, default=0)
@@ -49,9 +49,14 @@ def main():
         with open(__file__, "rb") as driver:
             driver_hash = hashlib.sha256(driver.read()).hexdigest()
         result["build"] = dict(pyav=version("av"), scenedetect=version("scenedetect"), driver=driver_hash)
-        parameter = "threshold" if args.detector == "content" else "adaptive_threshold"
+        parameter = "adaptive_threshold" if args.detector == "adaptive" else "threshold"
         detector_arguments = {parameter: args.threshold, "min_scene_len": args.min_scene_len}
-        detector = (ContentDetector if args.detector == "content" else AdaptiveDetector)(**detector_arguments)
+        if args.detector == "fade":
+            from scenedetect.detectors import ThresholdDetector
+            # Fade proposals use the pinned detector's intensity threshold and midpoint policy.
+            detector = ThresholdDetector(**detector_arguments)
+        else:
+            detector = (ContentDetector if args.detector == "content" else AdaptiveDetector)(**detector_arguments)
         result["detectorConfig"] = dict(parameter=parameter,
             adaptiveThreshold=detector_arguments.get("adaptive_threshold"),
             contentThreshold=detector_arguments.get("threshold"), minSceneLenFrames=args.min_scene_len)

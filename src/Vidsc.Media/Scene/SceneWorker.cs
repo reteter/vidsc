@@ -107,7 +107,7 @@ public sealed class SceneWorker
         string detector,
         CancellationToken cancellationToken,
         TimeSpan? timeout = null, Action<ToolProcessIdentity>? processStarted = null,
-        SceneJobRequest? request = null)
+        SceneJobRequest? request = null, string? cacheDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
         using var lease = await Export.CopyJobAdmission.EnterAsync(Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
@@ -134,7 +134,7 @@ public sealed class SceneWorker
                 return new SceneJobResult(false, "Source identity is stale.", source, null, null, null, null, null, [], null, null);
             if (!double.IsFinite(startSeconds) || startSeconds < 0 || !double.IsFinite(durationSeconds) || durationSeconds < 0
                 || !double.IsFinite(request.SourceOriginSeconds) || !double.IsFinite(request.Threshold)
-                || request.MinSceneLenFrames < 1 || request.StreamIndex < 0 || detector is not ("content" or "adaptive"))
+                || request.MinSceneLenFrames < 1 || request.StreamIndex < 0 || detector is not ("content" or "adaptive" or "fade"))
                 throw new ArgumentException("Invalid scene request.");
 
             string reportPath = Path.Combine(
@@ -150,6 +150,23 @@ public sealed class SceneWorker
                 throw new InvalidOperationException("Missing native scene runtime.");
             foreach (string nativeFile in nativeFiles)
                 _ = Open(nativeFile);
+
+            string[] runtime = AnalysisReportCache.RuntimeFiles(_pythonPath, _driverPath);
+            foreach (string file in runtime) _ = Open(file);
+            string cacheKey = AnalysisReportCache.Identity(runtime, new {
+                sourceIdentity.IdentityKey, request.StreamIndex, request.SourceOriginSeconds, startSeconds, durationSeconds,
+                detector, request.Threshold, request.MinSceneLenFrames, backend = "pyav", policy = "native-size-bgr24;decoded-frame-pts-v2" }, cancellationToken);
+            if (cacheDirectory is not null)
+            {
+                string? cached = AnalysisReportCache.Read(Path.Combine(cacheDirectory, "scenes"), cacheKey,
+                    4 * 1024 * 1024, request.JobId, request.Generation);
+                if (cached is not null)
+                {
+                    var parsed = Parse(source, cached, null, request, startSeconds, durationSeconds, detector);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (parsed.Success && sourceIdentity.MatchesCurrentFile()) return parsed with { CacheIdentity = cacheKey };
+                }
+            }
 
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
 
@@ -206,7 +223,11 @@ public sealed class SceneWorker
 
             if (!sourceIdentity.MatchesCurrentFile())
                 return new SceneJobResult(false, "Source changed during scene analysis.", source, null, null, null, null, null, [], run, null);
-            return Parse(source, json, run, request, startSeconds, durationSeconds, detector);
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = Parse(source, json, run, request, startSeconds, durationSeconds, detector) with { CacheIdentity = cacheKey };
+            if (result.Success && cacheDirectory is not null)
+                AnalysisReportCache.Write(Path.Combine(cacheDirectory, "scenes"), cacheKey, json);
+            return result;
         }
         finally
         {

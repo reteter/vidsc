@@ -7,6 +7,26 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## M6 analysis backend and tools — 16 October 2026
+
+The #18 increment adds configurable scene proposals with explicit frame-resolved
+conversion, grouped visible thumbnails and native-channel multiresolution waveform
+peaks. Frozen packaged adapters pass VFR/origin, exact sample/gap/EOF, cache,
+source-protection, cancellation and shared-admission checks. Canonical CI passes
+484 tests and rollback; non-GUI Release gates pass. A tiny CPU/CUDA comparison
+preserves identical PTS/scores and shows no acceleration benefit.
+[The evidence record](validation/2026-10-16-m6-analysis.md) states bounds and limits.
+The visible check passes scene conversion/refusal, waveform loading, thumbnails
+and viewport invalidation. The clipped-panel fix passes CI/package and review;
+the user subsequently reports the final manual checklist passed, including
+default-size scrolling and waveform appearance. This completes bounded M6 workflow
+acceptance; delivery remains in PR #75. Deferred M1 and M7 performance acceptance
+are not claimed.
+Review follow-up fixes legacy Scripts-root waveform preflight. Runtime-layout/guard
+regressions, canonical CI (490 tests/rollback), package gates and delta review pass;
+an additional host legacy-PyAV trial is blocked before adapter start by interpreter
+qualification, as distinguished in the evidence record.
+
 ## Scene-window positioning — 16 October 2026
 
 The #28 increment uses backward stream-time-base seek and actual PTS filtering,

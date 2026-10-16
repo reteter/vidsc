@@ -304,6 +304,7 @@ public sealed partial class MainViewModel
     {
         if (_viewport.Start == Math.Max(0, start) && _viewport.Span == Math.Max(1, span)) return;
         ++_thumbnailVersion;
+        VisibleThumbnails.Clear();
         _indexCancellation?.Cancel();
         _viewport = new(Math.Max(0, start), Math.Max(1, span)); ScheduleRecovery();
         OnPropertyChanged(nameof(TimelineScaleText));

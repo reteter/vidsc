@@ -103,6 +103,7 @@
 
   "scene": {
     "driver": "tools/scene/vidsc_scene_job.py",
+    "analysisHelpers": ["tools/scene/vidsc_waveform_job.py", "tools/scene/vidsc_thumbnail_job.py"],
     "buildScript": "tools/Build-Scene-Runtime.ps1",
     "relocatable": {
       "kind": "official Windows embeddable CPython + project-local pip wheel install (no venv, no pyvenv.cfg)",
