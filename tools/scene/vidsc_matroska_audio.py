@@ -139,3 +139,88 @@ def validate(path, index, expected, start, end, budget):
     for a, b in zip(expected["decoded"], frames):
         av1.require(a["planeSha256"] == b["planeSha256"] and a["samples"] == b["samples"]
             and fraction(a["pts"]) - start == fraction(b["pts"]), "AudioOutputReconstructionChanged")
+
+
+def streaming_read(path, index, start, end, budget, *, context_units=MAX_CONTEXT_UNITS):
+    """Keep only bounded decoder context and running packet/PCM proofs."""
+    import av
+    from collections import deque
+    prefix = deque(maxlen=context_units or 1)
+    packets, reference, fresh = av1.DigestRows(), av1.DigestRows(), av1.DigestRows()
+    first = last = None; retained = 0; first_sequence = last_sequence = None
+    cursor = start; fresh_cursor = start; natural_eof = False; drained = False
+    def pcm(frame, tb, digest, expected_cursor):
+        row = decoded_row(frame, tb, start, end)
+        if row is None: return expected_cursor
+        av1.require(not frame.is_corrupt and frame.sample_rate == config["sampleRate"]
+            and frame.format.name == config["sampleFormat"]
+            and frame.layout.name == config["layout"] and fraction(row["pts"]) == expected_cursor,
+            "AudioCoverageGapOrRepresentationChanged")
+        row["pts"] = inspection.rational(fraction(row["pts"]) - start)
+        digest.add(row)
+        return expected_cursor + Fraction(row["samples"], config["sampleRate"])
+    with av.open(str(path)) as container:
+        stream = container.streams[index]; ctx = stream.codec_context; tb = stream.time_base
+        av1.require(stream.type == "audio" and ctx.name == "eac3" and ctx.sample_rate == 48000
+            and ctx.layout.name in ("stereo", "5.1", "5.1(side)") and ctx.initial_padding == 0
+            and ctx.trailing_padding == 0, "AudioCopyPolicyUnqualified")
+        config = dict(codec="eac3", sampleRate=ctx.sample_rate, channels=len(ctx.layout.channels), layout=ctx.layout.name,
+            extraSha256=inspection.sha(bytes(ctx.extradata or b"")), sampleFormat=ctx.format.name,
+            metadata={k: v for k, v in stream.metadata.items() if k.lower() in ("title", "language")}, disposition=int(stream.disposition))
+        ctx.options = dict(ctx.options, cons_noisegen="1"); ctx.thread_count = 2; ctx.open()
+        candidate = av.CodecContext.create("eac3", "r"); candidate.extradata = ctx.extradata
+        candidate.options = {"cons_noisegen": "1"}; candidate.thread_count = 2; candidate.open()
+        previous_end = None
+        def retain(packet, ordinal):
+            nonlocal first, last, first_sequence, last_sequence, fresh_cursor, previous_end
+            payload = bytes(packet); program(payload)
+            a, b = packet.pts * tb, (packet.pts + packet.duration) * tb
+            av1.require(previous_end is None or previous_end == a, "AudioPacketGapUnqualified")
+            previous_end = b
+            if first is None: first, first_sequence = a, ordinal
+            last, last_sequence = b, ordinal
+            packets.add(dict(payloadSha256=inspection.sha(payload), size=len(payload),
+                pts=inspection.rational(a - start), dts=inspection.rational(packet.dts * tb - start),
+                duration=inspection.rational(packet.duration * tb)), len(payload))
+            for frame in candidate.decode(packet): fresh_cursor = pcm(frame, tb, fresh, fresh_cursor)
+        for ordinal, packet in enumerate(container.demux(stream)):
+            budget.check()
+            if not packet.size:
+                for frame in packet.decode(): cursor = pcm(frame, tb, reference, cursor)
+                drained = True
+                continue
+            av1.require(ordinal < av1.MAX_TRAVERSAL_PACKETS and packet.size <= 1024 * 1024
+                and packet.pts is not None and packet.dts is not None and packet.duration > 0
+                and not any(packet.iter_sidedata()), "AudioTimingOrDiscardUnqualified")
+            a, b = packet.pts * tb, (packet.pts + packet.duration) * tb
+            if a >= end: break
+            if b <= start and first is None and context_units: prefix.append((ordinal, packet))
+            av1.require(sum(p.size for _, p in prefix) <= inspection.MAX_BYTES, "AudioContextBudgetExceeded")
+            if a < end and b > start:
+                if first is None:
+                    retained = len(prefix)
+                    for sequence, context in prefix: retain(context, sequence)
+                    prefix.clear()
+                retain(packet, ordinal)
+            for frame in ctx.decode(packet): cursor = pcm(frame, tb, reference, cursor)
+        else:
+            natural_eof = True
+        for frame in candidate.decode(None): fresh_cursor = pcm(frame, tb, fresh, fresh_cursor)
+    av1.require(first is not None and last is not None and fresh_cursor == cursor
+        and (cursor == end or natural_eof and drained and start < cursor < end and cursor == last)
+        and reference.report() == fresh.report(), "Eac3PrerollOrCoverageUnqualified")
+    return dict(sourceStreamIndex=index, policy=POLICY, configuration=config, packetSummary=packets.report(),
+        decodedSummary=reference.report(), firstPacket=first_sequence, lastPacket=last_sequence,
+        retainedContextUnits=retained, contextPolicy="bounded-complete-original-units; exact-intended-source-context-pcm",
+        start=inspection.rational(first), end=inspection.rational(last),
+        leadingExtension=inspection.rational(start - first), trailingExtension=inspection.rational(max(Fraction(0), last - end)),
+        naturalEndShortfall=inspection.rational(max(Fraction(0), end - cursor)),
+        sourceCoverageEnd=inspection.rational(cursor), demuxCompleted=natural_eof, decoderDrained=drained)
+
+
+def streaming_validate(path, index, expected, start, end, budget):
+    actual = streaming_read(path, index, Fraction(0), end - start, budget,
+        context_units=expected["retainedContextUnits"])
+    av1.require(actual["configuration"] == expected["configuration"]
+        and actual["packetSummary"] == expected["packetSummary"]
+        and actual["decodedSummary"] == expected["decodedSummary"], "AudioOutputReconstructionChanged")

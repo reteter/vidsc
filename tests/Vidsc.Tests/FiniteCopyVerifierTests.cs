@@ -59,6 +59,97 @@ public sealed class FiniteCopyVerifierTests
             Request with { CodecName = "av1" }, Job, H, H, H, av1Hash: H));
     }
 
+    private static readonly FiniteCopyRequest StreamingRequest = Request with
+    { CodecName = "av1", LastPacket = 2000, EndPts = 80040, SourceWindow = true, EndAtEof = true };
+
+    [Fact]
+    public void StreamingAv1AcceptsLargeCompactNativeEofProof()
+    {
+        var report = StreamingReport();
+        var result = ParseStreaming(report);
+        Assert.Equal(H, result.ConfigSHA256);
+        Assert.Null(result.Output);
+        Assert.True(report.ToJsonString().Length < 8192);
+    }
+
+    [Theory]
+    [InlineData("eof")]
+    [InlineData("drain")]
+    [InlineData("duration")]
+    [InlineData("packet-count")]
+    [InlineData("terminal-unit")]
+    [InlineData("checks")]
+    [InlineData("runtime")]
+    [InlineData("association")]
+    public void StreamingAv1RejectsIncompleteEofOrBinding(string defect)
+    {
+        var report = StreamingReport();
+        switch (defect)
+        {
+            case "eof": report["finalDuration"]!["demuxCompleted"] = false; break;
+            case "drain": report["finalDuration"]!["decoderDrained"] = false; break;
+            case "duration": report["finalDuration"]!["rawFinalDuration"] = 0; break;
+            case "packet-count": report["packetSummary"]!["count"] = 2000; break;
+            case "terminal-unit": report["lastPacketEvidence"]!["pts"] = 79999; break;
+            case "checks": report["checks"] = new JsonObject(); break;
+            case "runtime": report["build"]!["av1HelperSha256"] = new string('B', 64); break;
+            case "association": report["packetSummary"]!["timingSha256"] = new string('B', 64); break;
+        }
+        Assert.ThrowsAny<Exception>(() => ParseStreaming(report));
+    }
+
+    [Theory]
+    [InlineData("packets")]
+    [InlineData("pixels")]
+    [InlineData("count")]
+    public void StreamingAv1RejectsChangedOutputDigestsAndCounts(string defect)
+    {
+        var report = StreamingReport();
+        report["outputValidated"] = true; report["outputSha256"] = H; report["outputConfigurationSha256"] = H;
+        report["outputTimeBase"] = TB();
+        report["outputRawPacketDurations"] = report["sourceRawPacketDurations"]!.DeepClone();
+        report["outputSummary"] = new JsonObject { ["packets"] = report["packetSummary"]!.DeepClone(),
+            ["presentations"] = report["presentationSummary"]!.DeepClone() };
+        report["terminalEvidence"] = new JsonObject { ["policy"] = "matroska-video-track-bound-v1",
+            ["rawDemuxEnd"] = new JsonObject { ["numerator"] = 2001, ["denominator"] = 25 },
+            ["declaredVideoTrackEnd"] = new JsonObject { ["numerator"] = 2001, ["denominator"] = 25 },
+            ["plannedEnd"] = new JsonObject { ["numerator"] = 2001, ["denominator"] = 25 }, ["muxGrid"] = TB(), ["reconciled"] = false };
+        Assert.NotNull(ParseStreaming(report, H).Output);
+        if (defect == "packets") report["outputSummary"]!["packets"]!["sha256"] = new string('B', 64);
+        if (defect == "pixels") report["outputSummary"]!["presentations"]!["sha256"] = new string('B', 64);
+        if (defect == "count") report["outputSummary"]!["presentations"]!["count"] = 2000;
+        Assert.ThrowsAny<Exception>(() => ParseStreaming(report, H));
+    }
+
+    private static FiniteCopyReport ParseStreaming(JsonObject report, string? output = null) => FiniteCopyVerifier.ParseReport(
+        report.ToJsonString(), StreamingRequest, Job, H, H, H, output, H);
+
+    private static JsonObject StreamingReport()
+    {
+        var report = Report();
+        report["schemaVersion"] = 3; report["codec"] = "av1"; report["lastPacket"] = 2000; report["endPts"] = 80040;
+        report["configurationPolicy"] = "immutable-av1-main8-single-layer-obu-v1";
+        report["summaryPolicy"] = "sha256-length-prefixed-canonical-json-v1";
+        report["codecEvidence"] = new JsonObject { ["kind"] = "av1StreamingTemporalUnitV1", ["sequenceHeaderSha256"] = H };
+        report["packetSummary"] = new JsonObject { ["count"] = 2001, ["bytes"] = 32 * 1024 * 1024, ["sha256"] = H };
+        report["packetSummary"]!["timingSha256"] = H;
+        report["presentationSummary"] = new JsonObject { ["count"] = 2001, ["bytes"] = 0, ["sha256"] = H,
+            ["firstPts"] = 0, ["lastPts"] = 80000, ["endPts"] = 80040, ["width"] = 16, ["height"] = 16, ["pixelFormat"] = "yuv420p" };
+        report["presentationSummary"]!["timingSha256"] = H;
+        report["sourceRawPacketDurations"] = new JsonObject { ["count"] = 2001, ["bytes"] = 0, ["sha256"] = H,
+            ["omittedCount"] = 0, ["policy"] = "single-presentation-unit-successor; omitted-or-one-mux-tick-v1" };
+        report["firstPacketEvidence"] = new JsonObject { ["sequence"] = 0, ["pts"] = 0, ["shownKeyReset"] = true, ["sequenceHeaderSha256"] = H };
+        report["lastPacketEvidence"] = new JsonObject { ["sequence"] = 2000, ["pts"] = 80000, ["shownPresentationCount"] = 1, ["sequenceHeaderSha256"] = H };
+        report["finalDuration"] = new JsonObject { ["independentlyQualifiedEof"] = true, ["demuxCompleted"] = true,
+            ["decoderDrained"] = true, ["basis"] = "native-demux-completion-and-decoder-drain", ["lastFramePts"] = 80000,
+            ["rawFinalDuration"] = 40, ["terminalEnd"] = 80040 };
+        report["checks"] = new JsonObject { ["streamingNativeReconstruction"] = true };
+        var build = report["build"]!.AsObject(); build.Remove("buildSha256"); build["av1HelperSha256"] = H;
+        build["buildSha256"] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Canonical(build))));
+        foreach (string key in new[] { "referencePackets", "rereadPackets", "selectedPackets", "referenceFrames", "freshFrames" }) report.Remove(key);
+        return report;
+    }
+
     [Fact]
     public void MalformedAndOversizedReportsCannotQualify()
     {

@@ -37,7 +37,7 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
             "Invalid Matroska mapping or admission identity.");
         var requestedCancellation = cancellationToken;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(40));
+        deadline.CancelAfter(TimeSpan.FromSeconds(video.Request.CodecName == "av1" ? 310 : 40));
         cancellationToken = deadline.Token;
         var guards = new List<FileStream>(); bool held = false;
         ToolProcessIdentity? active = null;
@@ -46,7 +46,7 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
         try
         {
             var source = Open(sourcePath);
-            Require(source.Length > 0 && (video.Request.SourceWindow || source.Length <= 16 * 1024 * 1024), "Matroska source budget exceeded.");
+            Require(source.Length > 0 && (video.Request.CodecName == "av1" || video.Request.SourceWindow || source.Length <= 16 * 1024 * 1024), "Matroska source budget exceeded.");
             Require(InspectionSourceIdentity.Capture(sourcePath).IdentityKey == video.Request.Source.SourceId &&
                 await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false) == video.SourceSHA256,
                 "Matroska source qualification is stale.");
@@ -76,8 +76,9 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
             foreach (int index in options.SubtitleStreamIndices) arguments.AddRange(["--subtitle-stream", index.ToString(CultureInfo.InvariantCulture)]);
             foreach (var track in audio) arguments.AddRange(["--audio-stream", track.StreamIndex.ToString(CultureInfo.InvariantCulture)]);
             if (request.SourceWindow) arguments.Add("--source-window");
+            if (request.EndAtEof) arguments.Add("--end-at-eof");
             if (request.TerminalEnd is not null) arguments.AddRange(["--terminal-end-pts", request.EndPts.ToString(CultureInfo.InvariantCulture)]);
-            var run = await ToolProcessRunner.RunAsync(pythonPath, arguments, TimeSpan.FromSeconds(40), cancellationToken, identity =>
+            var run = await ToolProcessRunner.RunAsync(pythonPath, arguments, TimeSpan.FromSeconds(request.CodecName == "av1" ? 310 : 40), cancellationToken, identity =>
             {
                 active = identity;
                 processStarted?.Invoke(identity);
@@ -123,15 +124,22 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
             var timings = mapping.GetProperty("audio").EnumerateArray().Select(track =>
             {
                 Rational first = Read(track.GetProperty("start")), last = Read(track.GetProperty("end"));
+                Rational coverageEnd = track.TryGetProperty("sourceCoverageEnd", out var coverage) ? Read(coverage) : end;
+                Rational shortfall = track.TryGetProperty("naturalEndShortfall", out var missing) ? Read(missing) : Rational.FromInt64(0);
+                Require(coverageEnd > start && coverageEnd <= end && shortfall == end - coverageEnd
+                    && Read(track.GetProperty("leadingExtension")) == start - first
+                    && Read(track.GetProperty("trailingExtension")) == (last > end ? last - end : Rational.FromInt64(0))
+                    && (!shortfall.IsPositive || last == coverageEnd && track.GetProperty("demuxCompleted").GetBoolean() && track.GetProperty("decoderDrained").GetBoolean()),
+                    "Audio terminal coverage is unproven.");
                 return new QualifiedAudioTiming(track.GetProperty("sourceStreamIndex").GetInt32(), "eac3",
-                    new(start, end), new(first, last), new(Rational.FromInt64(0), end - start), new(first - start, last - start),
-                    Read(track.GetProperty("leadingExtension")), Read(track.GetProperty("trailingExtension")));
+                    new(start, coverageEnd), new(first, last), new(Rational.FromInt64(0), coverageEnd - start), new(first - start, last - start),
+                    Read(track.GetProperty("leadingExtension")), Read(track.GetProperty("trailingExtension")), shortfall);
             }).ToArray();
             return result with { AudioTimings = timings };
         }
         catch (OperationCanceledException exception) when (!requestedCancellation.IsCancellationRequested && deadline.IsCancellationRequested)
         {
-            throw new InvalidOperationException("Matroska verification exceeded its 40-second invocation budget.", exception);
+            throw new InvalidOperationException($"Matroska verification exceeded its {(video.Request.CodecName == "av1" ? 310 : 40)}-second invocation budget.", exception);
         }
         finally { if (!held) foreach (var guard in guards) guard.Dispose(); }
     }
