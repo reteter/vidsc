@@ -41,14 +41,13 @@ public static class VisibleThumbnailWorker
         string runtime = Convert.ToHexString(fingerprint.GetHashAndReset());
         string key = CacheKey(source.IdentityKey, streamIndex, sourceOriginSeconds, uiTicks, runtime);
         string directory = Path.Combine(cache, "visible-thumbnails");
-        Directory.CreateDirectory(directory);
-        string cachedPath = Path.Combine(directory, key + ".json");
         if (!source.MatchesCurrentFile()) throw new IOException("Thumbnail source changed.");
-        if (File.Exists(cachedPath) && new FileInfo(cachedPath).Length <= MaxReport)
+        string? cachedJson = DerivedCache.Read(directory, key, MaxReport);
+        if (cachedJson is not null)
         {
             try
             {
-                string json = await File.ReadAllTextAsync(cachedPath, token).ConfigureAwait(false);
+                string json = cachedJson;
                 using var document = JsonDocument.Parse(json);
                 var cached = Parse(json, source.IdentityKey, streamIndex, sourceOriginSeconds,
                     document.RootElement.GetProperty("generation").GetInt64(), uiTicks, runtime);

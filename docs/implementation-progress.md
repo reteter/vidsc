@@ -16,6 +16,19 @@ non-GUI packaging passes CLI/scenes and promotion; [the M8 record](validation/20
 documents the evidence and limits. The package remains private-local-only;
 GUI/full M1 and public binary redistribution are not certified.
 
+## M7 non-GUI robustness — 16 October 2026
+
+The [#19](https://github.com/reteter/vidsc/issues/19) increment adds bounded shared
+worker/transport admission, configurable shared derived-report disk LRU, explicit
+decoded-thumbnail limits, pressure reclamation and local resource/cache diagnostics.
+Optional cache failures preserve successful analysis results; owned scratch remains
+separate. Focused pressure/queue regressions pass; canonical CI passes 505 tests and
+rollback. Frozen packaged proof passes seven cache and seventeen adapter controls,
+including repeated started cancellation and source/guard preservation. The
+[evidence record](validation/2026-10-16-m7-robustness.md) states exact boundaries.
+This completes the authorized backend robustness increment; deferred M1 and full
+M7 B1–B6 performance acceptance remain unclaimed.
+
 ## M6 analysis backend and tools — 16 October 2026
 
 The #18 increment adds configurable scene proposals with explicit frame-resolved

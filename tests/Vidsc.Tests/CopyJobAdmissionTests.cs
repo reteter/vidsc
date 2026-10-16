@@ -14,6 +14,23 @@ public sealed class CopyJobAdmissionCollection { }
 public sealed class CopyJobAdmissionTests
 {
     [Fact]
+    public async Task FullQueueRejectsWithoutLeakingAdmissionAndCancellationReclaimsCapacity()
+    {
+        using var owner = await CopyJobAdmission.EnterAsync(Guid.NewGuid(), default);
+        using var cancellation = new CancellationTokenSource();
+        var pending = Enumerable.Range(0, CopyJobAdmission.MaximumPendingJobs)
+            .Select(_ => CopyJobAdmission.EnterAsync(Guid.NewGuid(), cancellation.Token)).ToArray();
+        Assert.Equal(CopyJobAdmission.MaximumPendingJobs, CopyJobAdmission.Snapshot.Pending);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CopyJobAdmission.EnterAsync(Guid.NewGuid(), default));
+        cancellation.Cancel();
+        foreach (var task in pending) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        Assert.Equal(0, CopyJobAdmission.Snapshot.Pending);
+        Assert.True(CopyJobAdmission.Snapshot.Busy);
+        owner.Dispose();
+        using var next = await CopyJobAdmission.EnterAsync(Guid.NewGuid(), default).WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task RetainedFailureCarriesReconciliationIdentityAndReleasesAfterExactExit()
     {
         Guid job = Guid.NewGuid();

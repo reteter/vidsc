@@ -45,6 +45,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly MediaToolset _toolset;
     private readonly AppPaths _paths;
     private readonly Dispatcher _dispatcher;
+    private readonly Func<(ulong Available, ulong Total)> _memorySnapshotReader;
     private readonly FfmpegCli? _ffmpeg;
     private readonly SceneWorker? _sceneWorker;
     private readonly InspectionEvidenceWorker? _evidenceWorker;
@@ -67,6 +68,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly object _shutdownLock = new();
 
     private Task _transportChain = Task.CompletedTask;
+    internal const int MaximumTransportCommands = 16;
+    private int _pendingTransportCommands;
+    internal int PendingTransportCommands => Volatile.Read(ref _pendingTransportCommands);
     private Task _mediaJobTask = Task.CompletedTask;
     private CancellationTokenSource? _mediaJobCancellation;
     public ToolProcessIdentity? MediaJobProcess { get; private set; }
@@ -90,6 +94,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private long _navigationSeekVersion;
     private long _navigationDispatchedVersion;
     private long _navigationRequestWatermark;
+    private long _seekIssuedTimestamp;
+    private long _timedSeekVersion;
+    private double? _lastObservedSeekMilliseconds;
+    private SourceGeneration _timedSeekGeneration;
     private string _navigationReason = "Frame index unavailable. Build frame index explicitly (whole-file scan).";
     private long _durationTicks;
     private bool _isBusy;
@@ -132,12 +140,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         Func<string, CancellationToken, Task<SourceMediaInfo?>>? probeOverride = null,
         Func<string, MediaStreamInfo, long, bool, CancellationToken, Task<NavigationMap>>? navigationOverride = null,
         Func<string, ProgressiveInspectionRequest, CancellationToken, Task<ProgressiveInspectionSnapshot>>? progressiveOverride = null,
-        Func<SceneJobRequest, CancellationToken, Task<SceneJobResult>>? sceneOverride = null)
+        Func<SceneJobRequest, CancellationToken, Task<SceneJobResult>>? sceneOverride = null,
+        Func<(ulong Available, ulong Total)>? memorySnapshotReader = null)
     {
         _engine = engine ?? throw new ArgumentNullException(nameof(engine));
         _toolset = toolset ?? throw new ArgumentNullException(nameof(toolset));
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+        _memorySnapshotReader = memorySnapshotReader ?? Services.CachePressure.ReadMemory;
         _probeOverride = probeOverride;
         _navigationOverride = navigationOverride;
         _progressiveOverride = progressiveOverride;
@@ -593,6 +603,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
 
         long token = ++_openToken;
+        ResetSeekTiming();
         ++_thumbnailVersion;
         VisibleThumbnails.Clear();
         ClearAnalysis();
@@ -737,13 +748,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _indexCancellation?.Cancel();
         SetDesiredTicks(ticks, true);
         long version = Interlocked.Increment(ref _navigationSeekVersion);
+        _seekIssuedTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+        _lastObservedSeekMilliseconds = null;
+        _timedSeekGeneration = _engine.Positions.Generation;
         _navigationRequestWatermark = _engine.Positions.Snapshot().LastRequest?.Id.Value ?? 0;
-        EnqueueTransport(accurate ? "SEEK exact" : "SEEK approximate", () =>
+        bool accepted = EnqueueTransport(accurate ? "SEEK exact" : "SEEK approximate", () =>
         {
+            if (version != Interlocked.Read(ref _navigationSeekVersion)) return;
             if (accurate) _engine.SeekExact(TimeSpan.FromTicks(ticks));
             else _engine.SeekApproximate(TimeSpan.FromTicks(ticks));
             Interlocked.Exchange(ref _navigationDispatchedVersion, version);
         });
+        if (!accepted)
+        {
+            _navigationTargetOwned = false;
+            ResetSeekTiming();
+            StatusLine = "Transport queue is full or unavailable. Wait for queued operations, then seek again.";
+        }
     }
 
     public void ToggleMute()
@@ -770,6 +791,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>Called while the user drags the slider: coalesced approximate seeking only.</summary>
     public void BeginScrub()
     {
+        _indexCancellation?.Cancel();
         _isScrubbing = true;
         _lastApproximateSeekTicks = 0;
     }
@@ -850,7 +872,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void RefreshReadouts()
     {
+        if (Environment.TickCount64 - _lastPressureCheck >= 1000)
+        {
+            _lastPressureCheck = Environment.TickCount64;
+            ReclaimOptionalCaches();
+        }
         PlaybackPositionSnapshot snapshot = _engine.Positions.Snapshot();
+        if (snapshot.ObservedPresentation?.ResolvedFrom is { } resolved && snapshot.LastRequest is { } timedRequest
+            && resolved == timedRequest.Id && timedRequest.Id.Value > _navigationRequestWatermark
+            && snapshot.Generation == _timedSeekGeneration && timedRequest.Requested.ToTicks() == _navigationTarget
+            && Interlocked.Read(ref _navigationDispatchedVersion) == Interlocked.Read(ref _navigationSeekVersion)
+            && _timedSeekVersion != _navigationSeekVersion && _seekIssuedTimestamp != 0)
+        {
+            _timedSeekVersion = _navigationSeekVersion;
+            _lastObservedSeekMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(_seekIssuedTimestamp).TotalMilliseconds;
+        }
 
         SeekStateText = snapshot.SeekState.ToString();
         RequestedText = snapshot.LastRequest is null
@@ -902,7 +938,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         try
         {
-            DiagnosticsText = _engine.GetDiagnostics().ToDisplayText();
+            ReclaimOptionalCaches();
+            DiagnosticsText = _engine.GetDiagnostics().ToDisplayText()
+                + $"\n{MediaWorkerOwnership.DiagnosticText}\nsource generation={_openToken}; thumbnail generation={_thumbnailVersion}"
+                + $"\ntransport running/queued={PendingTransportCommands}/{MaximumTransportCommands}; export queue limit=100"
+                + $"\ncache={DerivedCache.Snapshot}; disk limit={_cachePolicy.DiskBytes / DerivedCachePolicy.GiB} GiB"
+                + $"\nvisible decoded thumbnails={ThumbnailBytes} bytes / {_cachePolicy.ThumbnailBytes}; {_cachePressureText}";
+            DiagnosticsText += $"\nlast seek to observed readout={_lastObservedSeekMilliseconds?.ToString("F1") ?? "pending/unavailable"} ms (includes UI sampling)"
+                + "\n" + ResourceDiagnosticText();
         }
         catch (Exception exception)
         {
@@ -1081,15 +1124,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             EnqueueTransport("PRESENTATION playback recovery", engine.RestartInvalidatedPlayback);
     }
 
-    private void EnqueueTransport(string label, Action action)
+    private bool EnqueueTransport(string label, Action action)
     {
         if (_shutdownRequested || _isBusy)
-            return;
+            return false;
 
         SourceGeneration source = _engine.Positions.Generation;
 
         lock (_transportLock)
         {
+            if (_pendingTransportCommands >= MaximumTransportCommands)
+            {
+                StatusLine = "Transport queue is full. Wait for queued operations and retry.";
+                return false;
+            }
+            Interlocked.Increment(ref _pendingTransportCommands);
             _transportChain = _transportChain.ContinueWith(
                 _ =>
                 {
@@ -1103,11 +1152,19 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     {
                         AppendLog($"{label} failed: {exception.Message}");
                     }
+                    finally { Interlocked.Decrement(ref _pendingTransportCommands); }
                 },
                 CancellationToken.None,
                 TaskContinuationOptions.None,
                 TaskScheduler.Default);
+            return true;
         }
+    }
+
+    private void ResetSeekTiming()
+    {
+        _seekIssuedTimestamp = 0;
+        _lastObservedSeekMilliseconds = null;
     }
 
     private bool CanOpen() => !_isBusy && !_shutdownRequested;
@@ -1265,6 +1322,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task CloseSourceAsync()
     {
         ++_openToken;
+        ResetSeekTiming();
         ++_thumbnailVersion;
         VisibleThumbnails.Clear();
         ClearAnalysis();

@@ -19,6 +19,57 @@ namespace Vidsc.Tests;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public async Task BlockedTransportIsBoundedAndRejectedSeekCanRetryAfterDrain()
+    {
+        AppPaths paths = NewPaths();
+        using var release = new ManualResetEventSlim();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new FakePlaybackEngine { StepAction = () => { started.TrySetResult(); release.Wait(); } };
+        var vm = new MainViewModel(engine, ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher);
+        try
+        {
+            vm.StepForward();
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            for (int i = 0; i < 100; i++) vm.StepForward();
+            Assert.Equal(MainViewModel.MaximumTransportCommands, vm.PendingTransportCommands);
+            vm.SeekExact(TimeSpan.TicksPerSecond);
+            Assert.Contains("Transport queue is full", vm.StatusLine);
+            vm.RefreshDiagnostics();
+            Assert.Contains("last seek to observed readout=pending/unavailable", vm.DiagnosticsText);
+            release.Set();
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, vm.PendingTransportCommands);
+            Assert.Equal(0, engine.ExactSeekCount);
+            vm.SeekExact(0);
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1, engine.ExactSeekCount);
+            Assert.Equal(0, vm.PendingTransportCommands);
+        }
+        finally { release.Set(); await vm.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task PressureReclaimsVisibleThumbnailsAndReportsTheSample()
+    {
+        AppPaths paths = NewPaths();
+        (ulong Available, ulong Total) memory = (4UL * 1024 * 1024 * 1024, 8UL * 1024 * 1024 * 1024);
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher,
+            memorySnapshotReader: () => memory);
+        try
+        {
+            vm.VisibleThumbnails.Add(new(new System.Windows.Media.Imaging.BitmapImage(), "fixture"));
+            vm.RefreshDiagnostics();
+            Assert.Single(vm.VisibleThumbnails);
+            memory.Available = 128UL * 1024 * 1024;
+            vm.RefreshDiagnostics();
+            Assert.Empty(vm.VisibleThumbnails);
+            Assert.Contains("pressure=True", vm.DiagnosticsText);
+            Assert.Contains("visible decoded thumbnails=0 bytes", vm.DiagnosticsText);
+        }
+        finally { await vm.ShutdownAsync(); }
+    }
+
+    [Fact]
     public async Task AccurateDestinationRejectsRestoredCopyPathBeforeQueueAndAcceptsCorrection()
     {
         AppPaths paths = NewPaths(); string source = Path.Combine(paths.WorkDirectory, "fixture.mp4"); File.WriteAllText(source, "fixture");
