@@ -35,8 +35,9 @@ public static class WaveformWorker
         string job = Guid.NewGuid().ToString("N");
         string key = AnalysisReportCache.Identity(runtime, new { source.IdentityKey, streamIndex,
             sourceOriginSeconds, start, duration, binWidthSamples, backend = "pyav", policy = "fltp-native-rate-layout;native-pts-peaks-v1" }, cancellationToken);
-        string directory = Path.Combine(cache, "waveform"), output = Path.Combine(cache, "waveform-" + job + ".json");
-        Directory.CreateDirectory(cache);
+        // Required job scratch is independent of optional cache availability.
+        string scratch = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(cache))!, "analysis-jobs");
+        string directory = Path.Combine(cache, "waveform"), output = Path.Combine(scratch, "waveform-" + job + ".json");
         string? cached = AnalysisReportCache.Read(directory, key, MaxReportBytes, job, generation);
         if (cached is not null)
         {
@@ -52,6 +53,7 @@ public static class WaveformWorker
         bool retained = false;
         try
         {
+            Directory.CreateDirectory(scratch);
             string N(double value) => value.ToString("R", CultureInfo.InvariantCulture);
             var result = await ToolProcessRunner.RunAsync(python, [driver, "--input", source.Path, "--output", output,
                 "--source-id", source.IdentityKey, "--job-id", job, "--generation", generation.ToString(CultureInfo.InvariantCulture),
