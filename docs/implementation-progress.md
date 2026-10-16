@@ -7,13 +7,16 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
-## M8 package preparation — 16 October 2026
+## M8 non-GUI delivery — 16 October 2026
 
 The expanded framework-dependent win-x64 package now checks native/CLI identities,
 the scene runtime input tree and a complete final file inventory, and includes usage
-and actual distribution obligations. Focused integrity controls pass. Preliminary
-non-GUI packaging passes CLI/scenes and promotion; [the M8 record](validation/2026-10-16-m8-release.md)
-documents the evidence and limits. The package remains private-local-only;
+and actual distribution obligations. After #19 integration, canonical CI passes
+505 tests, integrity and rollback; the frozen package passes non-GUI Release gates
+and clean-location scenes/project/expanded-copy/accurate/no-clobber delivery.
+All fifteen children exit and the 1,978-file inventory remains unchanged. The
+[M8 record](validation/2026-10-16-m8-release.md) identifies the exact product/driver
+builds and limits. The package remains private-local-only;
 GUI/full M1 and public binary redistribution are not certified.
 
 ## M7 non-GUI robustness — 16 October 2026

@@ -146,7 +146,7 @@ static class M8Delivery
             var accurate = await accurateExporter.ExportAsync(plan, accurateDestination, journals, default, Started);
             Require(accurate.Success && accurate.ExitConfirmed && File.Exists(accurateDestination)
                 && accurate.PresentationEndSeconds == Rational.FromInt64(3) && accurate.AudioTimings is { Count: 1 }
-                && accurate.Assurance == "full-source-window; full-output-scan", "Packaged accurate export failed: " + accurate.Error);
+                && accurate.Assurance == "full-scan", "Packaged accurate export failed: " + accurate.Error);
             string accurateHash = Hash(accurateDestination);
             var accurateConflict = await accurateExporter.ExportAsync(plan, accurateDestination, journals, default, Started);
             Require(!accurateConflict.Success && accurateConflict.ExitConfirmed && Hash(accurateDestination) == accurateHash,
@@ -165,7 +165,8 @@ static class M8Delivery
                 strictCopy = new { selectedStart = "1.25", selectedEnd = "4.25", actualStart = "1", actualEnd = "5",
                     videoAssurance = "full-bounded-finite-source-reconstruction", outputValidation = "full-output-scan",
                     audioPolicy = audioRange.Policy, copy.AudioTimings, outputSha256 = copyHash },
-                accurate = new { start = plan.ResolvedStartSeconds.ToString(), end = plan.ResolvedEndSeconds.ToString(), copyStart = plan.CopyStartSeconds.ToString(), copyEnd = plan.CopyEndSeconds.ToString(), accurate.Assurance, accurate.AudioDetails, accurate.MinimumPsnr, accurate.MinimumBlockSsim, outputSha256 = accurateHash },
+                accurate = new { start = plan.ResolvedStartSeconds.ToString(), end = plan.ResolvedEndSeconds.ToString(), copyStart = plan.CopyStartSeconds.ToString(), copyEnd = plan.CopyEndSeconds.ToString(),
+                    planAssurance = plan.Assurance, accurate.Assurance, accurate.AudioDetails, accurate.MinimumPsnr, accurate.MinimumBlockSsim, outputSha256 = accurateHash },
                 children = children.Select(child => new { tool = Path.GetRelativePath(app, child.ExecutablePath), child.ProcessId, exited = true }),
                 scope = "non-GUI packaged backend relocation; desktop/native playback and minimum-OS acceptance not run"
             }, new JsonSerializerOptions { WriteIndented = true }));
