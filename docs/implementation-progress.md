@@ -22,6 +22,10 @@ the user subsequently reports the final manual checklist passed, including
 default-size scrolling and waveform appearance. This completes bounded M6 workflow
 acceptance; delivery remains in PR #75. Deferred M1 and M7 performance acceptance
 are not claimed.
+Review follow-up fixes legacy Scripts-root waveform preflight. Runtime-layout/guard
+regressions, canonical CI (490 tests/rollback), package gates and delta review pass;
+an additional host legacy-PyAV trial is blocked before adapter start by interpreter
+qualification, as distinguished in the evidence record.
 
 ## Scene-window positioning — 16 October 2026
 

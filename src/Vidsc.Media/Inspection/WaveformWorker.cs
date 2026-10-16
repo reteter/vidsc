@@ -25,7 +25,10 @@ public static class WaveformWorker
         using var owner = await StreamingProbeOwnership.EnterAsync(source.Path, python, cancellationToken).ConfigureAwait(false);
         string[] runtime = AnalysisReportCache.RuntimeFiles(python, driver);
         foreach (string file in runtime) owner.Protect(file);
-        string[] native = Directory.GetFiles(Path.Combine(Path.GetDirectoryName(python)!, "Lib", "site-packages", "av.libs"), "*.dll");
+        string runtimeRoot = Path.GetDirectoryName(python)!;
+        if (Path.GetFileName(runtimeRoot).Equals("Scripts", StringComparison.OrdinalIgnoreCase)) runtimeRoot = Path.GetDirectoryName(runtimeRoot)!;
+        string nativeDirectory = Path.Combine(runtimeRoot, "Lib", "site-packages", "av.libs");
+        string[] native = Directory.Exists(nativeDirectory) ? Directory.GetFiles(nativeDirectory, "*.dll") : [];
         if (native.Length == 0) throw new IOException("Packaged PyAV libraries missing.");
         foreach (string file in native) owner.Protect(file);
         if (!source.MatchesCurrentFile()) throw new IOException("Waveform source changed.");
