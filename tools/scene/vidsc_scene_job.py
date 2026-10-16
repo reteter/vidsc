@@ -5,8 +5,10 @@ import hashlib
 import json
 import math
 import os
+from contextlib import ExitStack
 from fractions import Fraction
 from importlib.metadata import version
+from itertools import chain
 
 
 def main():
@@ -53,8 +55,8 @@ def main():
         result["detectorConfig"] = dict(parameter=parameter,
             adaptiveThreshold=detector_arguments.get("adaptive_threshold"),
             contentThreshold=detector_arguments.get("threshold"), minSceneLenFrames=args.min_scene_len)
-        # Sequential decoding avoids backend seek/frame-number assumptions for VFR sources.
-        with av.open(args.input) as container:
+        with ExitStack() as resources:
+            container = resources.enter_context(av.open(args.input))
             stream = next(s for s in container.streams.video if s.index == args.stream)
             stream.codec_context.thread_count = 2
             result["timeBaseNumerator"] = stream.time_base.numerator
@@ -64,12 +66,58 @@ def main():
             cuts = []
             end = args.start + args.duration if args.duration > 0 else math.inf
             origin = Fraction(str(args.origin))
-            for frame in container.decode(stream):
+            positioning = dict(strategy="sequential" if args.start == 0 else "backward-keyframe-seek",
+                targetPts=None, firstDecodedPts=None, firstDecodedTimeBaseNumerator=None,
+                firstDecodedTimeBaseDenominator=None, framesDecoded=0, framesDiscardedBeforeStart=0,
+                seekLandingPts=None, seekLandingTimeBaseNumerator=None, seekLandingTimeBaseDenominator=None,
+                framesDiscardedForCoverageFallback=0,
+                detectorContextPolicy="interval-local-cold-start; decoder-preroll-discarded")
+            result["positioning"] = positioning
+            if args.start > 0:
+                # Stream-relative seek units already include the explicit native origin.
+                # Backward rounding must not advance the requested presentation boundary.
+                target = (origin + Fraction(str(args.start))) / stream.time_base
+                positioning["targetPts"] = target.numerator // target.denominator
+                container.seek(positioning["targetPts"], stream=stream, backward=True, any_frame=False)
+            decoded = iter(container.decode(stream))
+            first = next(decoded, None)
+            late_landing = False
+            if args.start > 0 and first is not None:
+                if first.pts is None or first.time_base is None:
+                    raise ValueError("Decoded frame has no presentation timestamp/time base")
+                positioning.update(seekLandingPts=first.pts,
+                    seekLandingTimeBaseNumerator=first.time_base.numerator,
+                    seekLandingTimeBaseDenominator=first.time_base.denominator)
+                late_landing = first.pts * first.time_base - origin > Fraction(str(args.start))
+            if args.start > 0 and (first is None or late_landing):
+                # Empty/late seek output does not prove left-edge coverage or EOF.
+                # Fresh traversal also preserves sources whose video starts after the origin.
+                positioning["strategy"] = ("sequential-late-seek-fallback" if late_landing
+                    else "sequential-empty-seek-fallback")
+                if late_landing:
+                    positioning["framesDecoded"] += 1
+                    positioning["framesDiscardedForCoverageFallback"] = 1
+
+                fallback = resources.enter_context(av.open(args.input))
+                fallback_stream = next(s for s in fallback.streams.video if s.index == args.stream)
+                fallback_stream.codec_context.thread_count = 2
+                decoded = fallback.decode(fallback_stream)
+            elif first is not None:
+                decoded = chain((first,), decoded)
+            for frame in decoded:
+                positioning["framesDecoded"] += 1
+                if positioning["framesDecoded"] > 250001:
+                    raise ValueError("Analysis exceeds 250001 decoded frames including preroll; request a shorter interval")
                 if frame.pts is None or frame.time_base is None:
                     raise ValueError("Decoded frame has no presentation timestamp/time base")
                 timestamp = frame.pts * frame.time_base - origin
+                if positioning["firstDecodedPts"] is None:
+                    positioning.update(firstDecodedPts=frame.pts,
+                        firstDecodedTimeBaseNumerator=frame.time_base.numerator,
+                        firstDecodedTimeBaseDenominator=frame.time_base.denominator)
                 seconds = float(timestamp)
                 if seconds < args.start:
+                    positioning["framesDiscardedBeforeStart"] += 1
                     continue
                 if seconds >= end:
                     break
