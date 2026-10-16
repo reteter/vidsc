@@ -7,6 +7,17 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## Scene-window positioning — 16 October 2026
+
+The #28 increment uses backward stream-time-base seek and actual PTS filtering,
+preserving interval-local detector input and bounded fallback for empty/late seek
+landing. Independent AVC/HEVC and VFR/origin checks match sequential scenes/PTS
+while decoding 70 instead of 570, or 45 instead of 357 frames in the recorded
+windows. Packaged adapter cancellation, guards, cleanup and admission reuse pass;
+11 Python checks, canonical CI (454 cases/rollback) and non-GUI package gates pass.
+[The evidence record](validation/2026-10-16-scene-window-seek.md) states the context
+policy and limits; no throughput, deferred M1 or full M6 acceptance is claimed.
+
 ## AVC/HEVC streaming and original EOF — 16 October 2026
 
 The #71 increment uses bounded packet/native-presentation summaries for ordinary
