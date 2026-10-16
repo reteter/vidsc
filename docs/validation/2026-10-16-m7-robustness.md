@@ -107,6 +107,18 @@ not represented as a run of the subsequently changed managed bytes. SHA-256:
 | Flyleaf DLL | `0A2935C9BBE7694F6F4AE97D7CA916DE748414E9201146C8766D621CD41EA976` |
 | Reused M6 package manifest | `5970634D5A55D42D17D25F52F2664BC34E944F7347C1BCB90A0667647B83D021` |
 
+The final guard is separately verified on implementation commit `8ab6d31`:
+canonical CI passes 505 tests and rollback, and nine cache controls pass against
+actual loaded Media SHA-256
+`FA5F50C9F8EBD297516830D9D1E52F314F9A5A9A20F71B8D6943AC04134C9697`.
+These include a real existing file symlink: both the link and its external sentinel
+target remain unchanged and no staging file remains. A first follow-up incorrectly
+executed an older DLL copied by the harness build. That harness failure is retained;
+the corrective run checks the loaded assembly location/hash against final references
+before testing and verifies identical bytes afterward. The seventeen adapter checks
+above retain their earlier freeze identity; this is a current-byte cache follow-up,
+not a relabelled broad native run.
+
 Ignored local evidence is under `artifacts/workflow/m7-verification`: `report.md`,
 `proof-1/cache/cache.json`, `proof-1/adapters/adapters.json` and before/after identity
 reports. Raw evidence contains host locations and remains local. The sanitized
