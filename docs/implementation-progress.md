@@ -18,6 +18,11 @@ All fifteen children exit and the 1,978-file inventory remains unchanged. The
 [M8 record](validation/2026-10-16-m8-release.md) identifies the exact product/driver
 builds and limits. The package remains private-local-only;
 GUI/full M1 and public binary redistribution are not certified.
+Review repairs restore the explicitly pending legacy-runtime inventory exception
+while keeping delivery strict, and require clean, unchanged source provenance.
+After PR #76 repair integration, canonical CI passes 517 tests/integrity/rollback;
+the refreshed clean-source Release passes non-GUI package gates. The evidence
+distinguishes this refresh from the original full export-workflow run.
 
 ## M7 non-GUI robustness — 16 October 2026
 
