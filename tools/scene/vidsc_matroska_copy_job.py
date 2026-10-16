@@ -85,6 +85,10 @@ def frac(value):
     return Fraction(value["numerator"], value["denominator"])
 
 
+def compact_audio(args, codec):
+    return getattr(args, "streaming", False) and codec in ("aac", "ac3")
+
+
 def write(source, target, args, qualified, mapping, payloads, budget):
     import av
     video.require(target.exists() and target.stat().st_size == 0 and target.resolve() != source.resolve(), "InvalidOwnedOutput")
@@ -210,7 +214,8 @@ def write_streaming(source, target, args, qualified, mapping, payloads, budget):
         ordinals = {index: 0 for index in selected}
         observed = av1.TemporalUnits(tb, epoch) if args.codec == "av1" else nal.Packets(tb, epoch)
         audio_observed = {track["sourceStreamIndex"]: (streaming_audio.Packets(frac(track["timeBase"]), epoch),
-            nal.DigestRows(), track) for track in mapping["audio"]} if args.codec != "av1" else {}
+            nal.DigestRows(), track) for track in mapping["audio"]
+            if compact_audio(args, track["configuration"]["codec"])} if args.codec != "av1" else {}
         subtitle_events.sort(key=lambda event: event[0]); subtitle_cursor = 0
         for packet in incoming.demux([incoming.streams[index] for index in selected]):
             budget.check()
@@ -277,9 +282,12 @@ def validate_metadata(target, mapping, args, start, end, budget):
                 and chapter["metadata"] == expected["metadata"], "OutputChapterMappingMismatch")
     audio_validations = []
     for index, expected in enumerate(mapping["audio"], 1):
-        if getattr(args, "streaming", False):
+        if compact_audio(args, expected["configuration"]["codec"]):
             audio_validations.append(streaming_audio.streaming_validate(target, index, expected, start, end, budget))
-        elif args.codec == "av1": audio.streaming_validate(target, index, expected, start, end, budget)
+        elif args.codec == "av1" or getattr(args, "streaming", False):
+            audio.streaming_validate(target, index, expected, start, end, budget)
+            # Preserve output-stream positions for mixed AAC/AC-3 and E-AC-3 receipts.
+            audio_validations.append(None)
         else: audio.validate(target, index, expected, start, end, budget)
     for index, expected in enumerate(mapping["subtitles"], 1 + len(mapping["audio"])):
         with av.open(str(target)) as container:
@@ -315,8 +323,15 @@ def execute_guarded(args):
         mapping["audio"] = []
         for index in args.audio_stream:
             if getattr(args, "streaming", False):
+                with __import__("av").open(str(source)) as container:
+                    video.require(0 <= index < len(container.streams), "MissingAudioStream")
+                    audio_codec = container.streams[index].codec_context.name
+            else:
+                audio_codec = None
+            if compact_audio(args, audio_codec):
                 mapping["audio"].append(streaming_audio.streaming_read(source, index, start, end, budget))
-            elif args.codec == "av1":
+            elif streaming:
+                video.require(getattr(args, "container", "matroska") == "matroska", "UnsupportedMp4Audio")
                 mapping["audio"].append(audio.streaming_read(source, index, start, end, budget))
             else:
                 track, data = audio.qualify(source, index, start, end, budget)

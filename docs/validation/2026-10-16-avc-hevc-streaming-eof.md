@@ -101,6 +101,23 @@ total managed harness times including negative checks/overhead are 8.17 and
 7.84 seconds. Frozen helpers, managed binaries and manifest remain unchanged.
 Final high-effort delta review leaves no blocking findings.
 
+## Review regression: E-AC-3 routing
+
+PR review found that the new video streaming flag incorrectly sent every audio
+track to the AAC/AC-3 helper. Dispatch now follows each audio codec during
+qualification, mux auditing and output validation. AVC/HEVC Matroska E-AC-3
+reuses the existing bounded E-AC-3 policy; mixed tracks retain positional receipts.
+Two focused routing tests and high-effort delta review pass, as do canonical
+CI (468 tests/rollback) and rebuilt non-GUI Release gates. A real packaged managed
+AVC/E-AC-3 Matroska EOF export preserves all 50 video/63 audio packets and rational
+timing. Independent native PCM is identical for 96,768 samples per stereo channel;
+source identity and released guards are verified. Output is 66,278 bytes.
+The affected package manifest SHA-256 is
+`295A0D1EC5C0F07A656A68B76DC3576CDE9973564DBB8A8F1B41B2F66F20A870`.
+This fixture uses the existing zero-padding E-AC-3 contract; MP4 E-AC-3 declaring
+initial padding remains outside that policy. Earlier AVC/HEVC acceptance above
+refers to its original frozen package and was not rerun as a broader suite.
+
 ## Limits
 
 This is bounded acceptance of ordinary MP4 AVC/HEVC cases, not universal codec,
