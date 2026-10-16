@@ -32,6 +32,7 @@ public sealed partial class MainViewModel
         get => _selectedSegment;
         set
         {
+            var previous = _selectedSegment;
             if (!SetProperty(ref _selectedSegment, value) || value is null) return;
             bool restoring = _restoringEditor; _restoringEditor = true;
             SegmentName = value.Name;
@@ -40,6 +41,9 @@ public sealed partial class MainViewModel
             _restoringEditor = restoring;
             OnPropertyChanged(nameof(EditorInTicks)); OnPropertyChanged(nameof(EditorOutTicks));
             EditorSummary = DescribeSegment(value);
+            // A preview may replace only the resolution evidence for the same edit intent.
+            if (previous?.Id != value.Id || previous.RequestedStart != value.RequestedStart || previous.RequestedEnd != value.RequestedEnd)
+                CopyExportSummary = "Segment changed. Qualify the current export plan.";
         }
     }
     public string SegmentName { get => _segmentName; set { if (SetProperty(ref _segmentName, value)) ScheduleRecovery(); } }
@@ -97,7 +101,12 @@ public sealed partial class MainViewModel
                 OnPropertyChanged(nameof(EditorInTicks)); OnPropertyChanged(nameof(EditorOutTicks));
             }
             if (e.PropertyName is nameof(CopyStartSeconds) or nameof(CopyEndSeconds) or nameof(CopyDestination)
-                or nameof(SelectedCopyContainer) or nameof(SelectedCopyPolicy) or nameof(PreserveCopyChapters)) ScheduleRecovery();
+                or nameof(SelectedCopyContainer) or nameof(SelectedCopyPolicy) or nameof(PreserveCopyChapters)
+                or nameof(SelectedExportMode) or nameof(AllowFullSelectedEncode))
+            {
+                ScheduleRecovery(); RefreshExportEligibility();
+                if (!_restoringEditor) CopyExportSummary = "Settings changed. Qualify the current export plan.";
+            }
         };
     }
 
@@ -225,6 +234,8 @@ public sealed partial class MainViewModel
             }
             EditorSummary = IsProjectBound() ? "Source rebound. Export boundaries will be qualified again." : "Source differs from the project. Existing edits are retained. Start New project to edit this source.";
         }
+        RefreshExportEligibility();
+        CopyExportSummary = "Source rebound. Qualify the current export plan.";
     }
     public void NewProject()
     {
@@ -233,6 +244,7 @@ public sealed partial class MainViewModel
         _projectSource = new(_metadataIdentity.Path, _metadataIdentity.IdentityKey, video.Index, _mediaInfo.ContainerStartTicks ?? 0);
         _projectBindingRejected = false;
         _projectTrackSelection = [];
+        SelectedExportMode = ExportMode.StreamCopy; AllowFullSelectedEncode = false;
         Segments.Clear(); SelectedSegment = null; _undo.Clear(); _redo.Clear(); ProjectPath = null;
         SegmentName = "Segment 1"; _exactInUi = _exactOutUi = null; CopyStartSeconds = "0"; CopyEndSeconds = "1";
         _viewport = new(0, Math.Max(1, _durationTicks));
@@ -241,7 +253,8 @@ public sealed partial class MainViewModel
     }
     public EditorProject CaptureProject() => new(EditorProject.CurrentVersion,
         _projectSource ?? throw new InvalidOperationException("No editor project."), Segments.ToArray(),
-        new(SelectedCopyContainer, SelectedCopyPolicy, IsProjectBound() ? CopyTracks.Where(t => t.IsSelected).Select(t => t.StreamIndex).ToArray() : _projectTrackSelection.ToArray(), PreserveCopyChapters, CopyDestination), _viewport)
+        new(SelectedCopyContainer, SelectedCopyPolicy, IsProjectBound() ? CopyTracks.Where(t => t.IsSelected).Select(t => t.StreamIndex).ToArray() : _projectTrackSelection.ToArray(), PreserveCopyChapters, CopyDestination)
+        { Mode = SelectedExportMode, QualityPolicy = AccurateQualityPolicy, AllowFullSelectedEncode = AllowFullSelectedEncode }, _viewport)
         { Draft = new(SegmentName, CopyStartSeconds, CopyEndSeconds,
             _exactInUi is { } start ? UiToSource(start) : null,
             _exactOutUi is { } end ? UiToSource(end) : null, SelectedSegment?.Id) };
@@ -258,6 +271,7 @@ public sealed partial class MainViewModel
             _projectSource = project.Source; ProjectPath = path; _undo.Clear(); _redo.Clear(); ReplaceSegments(project.Segments);
             _projectTrackSelection = project.Settings.SelectedTracks.ToArray();
             SelectedCopyContainer = project.Settings.Container; SelectedCopyPolicy = project.Settings.BoundaryPolicy;
+            SelectedExportMode = project.Settings.Mode; AllowFullSelectedEncode = project.Settings.AllowFullSelectedEncode;
             PreserveCopyChapters = project.Settings.PreserveChapters; CopyDestination = project.Settings.Destination; _viewport = project.Viewport;
             if (project.Draft is { } draft)
             {
