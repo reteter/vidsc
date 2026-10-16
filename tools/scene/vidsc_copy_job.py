@@ -125,6 +125,9 @@ def reread_source_window(path, args, codec, extra, tb, budget):
 
 
 def qualify(args, result, matroska_subtitles=None):
+    if args.codec in ("h264", "hevc") and getattr(args, "streaming", False):
+        import vidsc_nal_streaming
+        return vidsc_nal_streaming.qualify(args, result, matroska_subtitles)
     if args.codec == "av1":
         import vidsc_av1_codec
         return vidsc_av1_codec.qualify(args, result, matroska_subtitles)
@@ -247,6 +250,7 @@ def parser():
     command.add_argument("--codec", choices=("h264", "hevc", "av1"), required=True)
     command.add_argument("--output-media")
     command.add_argument("--source-window", action="store_true")
+    command.add_argument("--streaming", action="store_true")
     command.add_argument("--terminal-end-pts", type=int)
     command.add_argument("--end-at-eof", action="store_true")
     return command
@@ -268,6 +272,9 @@ def execute(args, matroska_subtitles=None):
         result["success"] = False
         result["outputValidated"] = False
         expected = isinstance(exc, Rejected)
+        if getattr(args, "streaming", False):
+            import vidsc_nal_streaming
+            expected = expected or isinstance(exc, vidsc_nal_streaming.shared.Rejected)
         if args.codec == "av1":
             import vidsc_av1_codec
             expected = expected or isinstance(exc, vidsc_av1_codec.Rejected)

@@ -12,6 +12,7 @@ import vidsc_av1_codec as av1
 import vidsc_matroska_audio as audio
 
 POLICY = "matroska-video-subrip-clipped-chapters-v1"
+MP4_POLICY = "mp4-video-aac-ac3-streaming-v1"
 
 
 def integer(value):
@@ -82,6 +83,10 @@ def read_mapping(source, args, start, end, budget):
 
 def frac(value):
     return Fraction(value["numerator"], value["denominator"])
+
+
+def compact_audio(args, codec):
+    return getattr(args, "streaming", False) and codec in ("aac", "ac3")
 
 
 def write(source, target, args, qualified, mapping, payloads, budget):
@@ -175,9 +180,13 @@ def write(source, target, args, qualified, mapping, payloads, budget):
 
 def write_streaming(source, target, args, qualified, mapping, payloads, budget):
     import av
+    if args.codec != "av1":
+        import vidsc_nal_streaming as nal
+        import vidsc_audio_streaming as streaming_audio
     video.require(target.exists() and target.stat().st_size == 0 and target.resolve() != source.resolve(), "InvalidOwnedOutput")
     before = target.stat(); tb = frac(qualified["timeBase"]); epoch = args.start_pts * tb
-    with target.open("r+b") as owned, av.open(str(source)) as incoming, av.open(owned, "w", format="matroska",
+    container_format = getattr(args, "container", "matroska")
+    with target.open("r+b") as owned, av.open(str(source)) as incoming, av.open(owned, "w", format=container_format,
             options={"avoid_negative_ts": "disabled"}) as outgoing:
         outgoing.metadata.update(mapping["sourceMetadata"])
         original = incoming.streams[args.stream]
@@ -202,7 +211,11 @@ def write_streaming(source, target, args, qualified, mapping, payloads, budget):
         outgoing.set_chapters([dict(id=c["id"], start=integer(frac(c["outputStart"]) * 1_000_000_000),
             end=integer(frac(c["outputEnd"]) * 1_000_000_000), time_base=Fraction(1, 1_000_000_000), metadata=c["metadata"])
             for c in mapping["chapters"]])
-        ordinals = {index: 0 for index in selected}; observed = av1.TemporalUnits(tb, epoch)
+        ordinals = {index: 0 for index in selected}
+        observed = av1.TemporalUnits(tb, epoch) if args.codec == "av1" else nal.Packets(tb, epoch)
+        audio_observed = {track["sourceStreamIndex"]: (streaming_audio.Packets(frac(track["timeBase"]), epoch),
+            nal.DigestRows(), track) for track in mapping["audio"]
+            if compact_audio(args, track["configuration"]["codec"])} if args.codec != "av1" else {}
         subtitle_events.sort(key=lambda event: event[0]); subtitle_cursor = 0
         for packet in incoming.demux([incoming.streams[index] for index in selected]):
             budget.check()
@@ -213,12 +226,19 @@ def write_streaming(source, target, args, qualified, mapping, payloads, budget):
             if not first <= ordinal <= last: continue
             packet_tb = packet.time_base
             if index == args.stream:
-                row, _ = av1.packet_record(packet, ordinal, bytes(original.codec_context.extradata), tb)
+                if args.codec == "av1":
+                    row, _ = av1.packet_record(packet, ordinal, bytes(original.codec_context.extradata), tb)
+                else:
+                    row = nal.record(packet, ordinal, args.codec, bytes(original.codec_context.extradata), tb)
                 observed.add(row)
-                if ordinal == last:
+                if args.codec == "av1" and ordinal == last:
                     terminal = qualified["terminalFrame"]
                     video.require(row["shownPresentationCount"] == 1 and row["pts"] == terminal["pts"], "Av1TerminalUnitAssociationUnproven")
                     packet.duration = terminal["duration"]
+            elif index in audio_observed:
+                digest, side_digest, track = audio_observed[index]
+                row = streaming_audio.packet_record(packet, ordinal, packet_tb)
+                digest.add(row); side_digest.add(row["sideData"])
             packet.pts = integer(packet.pts - epoch / packet_tb)
             if packet.dts is not None: packet.dts = integer(packet.dts - epoch / packet_tb)
             packet_time = (packet.dts if packet.dts is not None else packet.pts) * packet_tb
@@ -227,8 +247,14 @@ def write_streaming(source, target, args, qualified, mapping, payloads, budget):
             packet.stream = stream; outgoing.mux(packet)
             video.require(owned.tell() <= av1.MAX_OUTPUT_BYTES, "StreamingOutputBudgetExceeded")
             if all(ordinals[index] > last for index, (_, _, last) in selected.items()): break
-        video.require(observed.finish(args.end_pts) == qualified["packetSummary"]
-            and observed.raw_report() == qualified["sourceRawPacketDurations"], "VideoManifestChanged")
+        if args.codec == "av1":
+            video.require(observed.finish(args.end_pts) == qualified["packetSummary"]
+                and observed.raw_report() == qualified["sourceRawPacketDurations"], "VideoManifestChanged")
+        else:
+            video.require(observed.report() == qualified["packetSummary"], "VideoManifestChanged")
+            for digest, side_digest, track in audio_observed.values():
+                video.require(digest.report() == track["packetSummary"] and side_digest.report() == track["sideDataSummary"],
+                    "AudioManifestChanged")
         for _, packet in subtitle_events[subtitle_cursor:]: outgoing.mux(packet)
         owned.flush()
     after = target.stat()
@@ -238,8 +264,11 @@ def write_streaming(source, target, args, qualified, mapping, payloads, budget):
 
 def validate_metadata(target, mapping, args, start, end, budget):
     import av
+    if getattr(args, "streaming", False):
+        import vidsc_audio_streaming as streaming_audio
     with av.open(str(target)) as container:
-        video.require(container.format.name == "matroska,webm" and len(container.streams) == 1 + len(mapping["audio"]) + len(mapping["subtitles"])
+        wanted = getattr(args, "container", "matroska")
+        video.require((container.format.name == "matroska,webm" if wanted == "matroska" else "mp4" in container.format.name.split(",")) and len(container.streams) == 1 + len(mapping["audio"]) + len(mapping["subtitles"])
             and container.streams[0].type == "video", "OutputInventoryMismatch")
         video.require(metadata(container) == mapping["sourceMetadata"]
             and metadata(container.streams[0]) == mapping["videoMetadata"]
@@ -251,8 +280,14 @@ def validate_metadata(target, mapping, args, start, end, budget):
                 and chapter["start"] * chapter["time_base"] == frac(expected["outputStart"])
                 and chapter["end"] * chapter["time_base"] == frac(expected["outputEnd"])
                 and chapter["metadata"] == expected["metadata"], "OutputChapterMappingMismatch")
+    audio_validations = []
     for index, expected in enumerate(mapping["audio"], 1):
-        if args.codec == "av1": audio.streaming_validate(target, index, expected, start, end, budget)
+        if compact_audio(args, expected["configuration"]["codec"]):
+            audio_validations.append(streaming_audio.streaming_validate(target, index, expected, start, end, budget))
+        elif args.codec == "av1" or getattr(args, "streaming", False):
+            audio.streaming_validate(target, index, expected, start, end, budget)
+            # Preserve output-stream positions for mixed AAC/AC-3 and E-AC-3 receipts.
+            audio_validations.append(None)
         else: audio.validate(target, index, expected, start, end, budget)
     for index, expected in enumerate(mapping["subtitles"], 1 + len(mapping["audio"])):
         with av.open(str(target)) as container:
@@ -262,34 +297,52 @@ def validate_metadata(target, mapping, args, start, end, budget):
             for a, b in zip(expected["packets"], actual["packets"]):
                 video.require(a["payloadSha256"] == b["payloadSha256"] and a["size"] == b["size"]
                     and a["outputStart"] == b["outputStart"] and a["outputEnd"] == b["outputEnd"], "OutputSubtitleMappingMismatch")
+    return audio_validations
 
 
 def execute_guarded(args):
-    result = dict(schemaVersion=1, jobId=args.job_id, policy=POLICY, success=False, error=None)
+    policy = MP4_POLICY if getattr(args, "container", "matroska") == "mp4" else POLICY
+    result = dict(schemaVersion=1, jobId=args.job_id, policy=policy, success=False, error=None)
     try:
-        budget = av1.StreamingBudget() if args.codec == "av1" else inspection.Budget()
+        streaming = args.codec == "av1" or getattr(args, "streaming", False)
+        if getattr(args, "streaming", False):
+            import vidsc_nal_streaming as nal
+            import vidsc_audio_streaming as streaming_audio
+        budget = av1.StreamingBudget() if streaming else inspection.Budget()
         source, target = Path(args.input), Path(args.output_media)
         source_args = type(args)(**vars(args)); source_args.output_media = None
         qualified = video.execute(source_args)
         video.require(qualified["success"], qualified.get("error") or "SourceQualificationFailed")
-        manifest = qualified["packetSummary"] if args.codec == "av1" else qualified["selectedPackets"]
+        manifest = qualified["packetSummary"] if streaming else qualified["selectedPackets"]
         video.require(inspection.sha(json.dumps(manifest, sort_keys=True).encode()) == args.manifest_id.lower(), "SourceManifestChanged")
         start, end = args.start_pts * frac(qualified["timeBase"]), args.end_pts * frac(qualified["timeBase"])
         mapping, payloads = read_mapping(source, args, start, end, budget)
+        mapping["policy"] = policy
+        if getattr(args, "container", "matroska") == "mp4":
+            video.require(args.codec != "av1" and not mapping["subtitles"] and not mapping["chapters"], "UnsupportedMp4Mapping")
         mapping["audio"] = []
         for index in args.audio_stream:
-            if args.codec == "av1":
+            if getattr(args, "streaming", False):
+                with __import__("av").open(str(source)) as container:
+                    video.require(0 <= index < len(container.streams), "MissingAudioStream")
+                    audio_codec = container.streams[index].codec_context.name
+            else:
+                audio_codec = None
+            if compact_audio(args, audio_codec):
+                mapping["audio"].append(streaming_audio.streaming_read(source, index, start, end, budget))
+            elif streaming:
+                video.require(getattr(args, "container", "matroska") == "matroska", "UnsupportedMp4Audio")
                 mapping["audio"].append(audio.streaming_read(source, index, start, end, budget))
             else:
                 track, data = audio.qualify(source, index, start, end, budget)
                 mapping["audio"].append(track); payloads[index] = data
         if args.phase == "write":
-            (write_streaming if args.codec == "av1" else write)(source, target, args, qualified, mapping, payloads, budget)
+            (write_streaming if streaming else write)(source, target, args, qualified, mapping, payloads, budget)
         else:
             video.require(args.phase == "validate", "InvalidPhase")
-        output_hash = inspection.source_digest(target, streaming=args.codec == "av1", budget=budget)
-        validate_metadata(target, mapping, args, start, end, budget)
-        if args.codec == "av1":
+        output_hash = inspection.source_digest(target, streaming=streaming, budget=budget)
+        audio_validations = validate_metadata(target, mapping, args, start, end, budget)
+        if streaming:
             # Source qualification already ran under the same immutable source/runtime guards.
             # Validate the completed output independently without decoding the source again.
             observed = dict(extra=None)
@@ -299,15 +352,19 @@ def execute_guarded(args):
                     representation=av1.representation(stream.codec_context), packets=qualified["packetSummary"],
                     presentations=qualified["presentationSummary"])
             validated = dict(qualified)
-            validated.update(av1.stream_output(target, observed, args, budget))
+            validated.update((av1 if args.codec == "av1" else nal).stream_output(target, observed, args, budget))
             validated.update(outputValidated=True, outputSha256=output_hash)
         else:
             validated = video.execute(args, matroska_subtitles=len(mapping["subtitles"]) + len(mapping["audio"]))
         video.require(validated["success"] and validated["outputValidated"], validated.get("error") or "OutputVideoRejected")
-        video.require(inspection.source_digest(target, streaming=args.codec == "av1", budget=budget) == output_hash, "OutputChanged")
+        video.require(inspection.source_digest(target, streaming=streaming, budget=budget) == output_hash, "OutputChanged")
         result.update(success=True, outputSha256=output_hash, videoReport=validated, mapping=mapping,
             driverSha256=inspection.sha(Path(__file__).read_bytes()), mappingValidated=True,
             audioHelperSha256=inspection.sha(Path(audio.__file__).read_bytes()), av1HelperSha256=inspection.sha(Path(av1.__file__).read_bytes()))
+        if getattr(args, "streaming", False):
+            result["streamingAudioHelperSha256"] = inspection.sha(Path(streaming_audio.__file__).read_bytes())
+            result["audioCopyHelperSha256"] = inspection.sha(Path(streaming_audio.audio.__file__).read_bytes())
+            result["audioValidation"] = audio_validations
     except Exception as exc:
         result["error"] = str(exc) if isinstance(exc, (video.Rejected, av1.Rejected)) else type(exc).__name__
     return result
@@ -324,6 +381,7 @@ def execute(args):
 if __name__ == "__main__":
     parser = video.parser()
     parser.add_argument("--phase", choices=("write", "validate"), required=True)
+    parser.add_argument("--container", choices=("mp4", "matroska"), default="matroska")
     parser.add_argument("--manifest-id", required=True)
     parser.add_argument("--subtitle-stream", action="append", type=int, default=[])
     parser.add_argument("--audio-stream", action="append", type=int, default=[])

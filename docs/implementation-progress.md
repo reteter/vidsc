@@ -7,6 +7,18 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## AVC/HEVC streaming and original EOF — 16 October 2026
+
+The #71 increment uses bounded packet/native-presentation summaries for ordinary
+AVC/HEVC copy ranges through independently drained source EOF. Packaged exports
+preserve 575 AVC and 578 HEVC Main10 presentations, selected AAC/AC-3 payloads
+and exact intended PCM; HEVC also covers CRA/RASL and differing packet/frame
+counts. Three success workers take 6.70/6.45 seconds in these correctness runs.
+Cancellation, failure, no-clobber and ownership checks pass. Canonical CI passes
+468 tests and rollback; non-GUI Release gates pass. [The evidence record](validation/2026-10-16-avc-hevc-streaming-eof.md)
+states bounded context, exact MP4 skip handling and remaining explicit refusals.
+This does not establish universal format support, performance acceptance or full M5b.
+
 ## AV1/MKV streaming and original EOF — 16 October 2026
 
 The #68 increment streams larger AV1/MKV selections through actual source EOF with

@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vidsc_inspection_job as inspection
 import vidsc_av1_codec as av1
+import vidsc_nal_streaming as nal
 
 
 def discover(args):
@@ -25,7 +26,6 @@ def discover(args):
             codec = "av1"
         if stream.type != "video" or codec not in ("h264", "hevc", "av1") or tb is None:
             raise ValueError("Configured AVC/HEVC video is required")
-        if codec != "av1": budget = inspection.Budget()
         av1.configuration(extra) if codec == "av1" else inspection.validate_configuration(codec, extra)
         inspection.configure_decoder(ctx)
         ordinal, previous_pts, last_rap = 0, None, None
@@ -33,7 +33,7 @@ def discover(args):
         for packet in container.demux(stream):
             budget.check()
             if packet.size:
-                if ordinal >= 10_000_000 or ctx.extradata != extra:
+                if ordinal >= 10_000_000 or packet.size > inspection.MAX_BYTES or ctx.extradata != extra:
                     raise ValueError("Source traversal/configuration changed")
                 record, _ = av1.packet_record(packet, ordinal, extra, tb) if codec == "av1" else inspection.packet_record(packet, ordinal, codec, extra, tb)
                 rap = {5} if codec == "h264" else {19, 20, 21}
@@ -47,15 +47,12 @@ def discover(args):
                         candidates.append(candidate)
                         # Interior resets cannot improve either selected boundary. Keep
                         # nearest starts and the first two successors at each requested edge.
-                        if codec == "av1":
-                            useful = []
-                            for boundary in (start, end):
-                                before = [p for p in candidates if p["pts"] * tb <= boundary]
-                                after = [p for p in candidates if p["pts"] * tb > boundary]
-                                useful.extend(before[-1:] + after[:2])
-                            candidates = list({p["packet"]: p for p in useful}.values())
-                        elif len(candidates) > 128:
-                            raise ValueError("Boundary candidate budget exceeded")
+                        useful = []
+                        for boundary in (start, end):
+                            before = [p for p in candidates if p["pts"] * tb <= boundary]
+                            after = [p for p in candidates if p["pts"] * tb > boundary]
+                            useful.extend(before[-1:] + after[:2])
+                        candidates = list({p["packet"]: p for p in useful}.values())
                 elif codec == "hevc" and last_rap is not None and set(record["nalTypes"]) & {8, 9}:
                     last_rap["tailPacket"] = ordinal
                 ordinal += 1
@@ -77,7 +74,7 @@ def discover(args):
                 break
         else:
             reached_eof = True
-        if codec == "av1" and reached_eof and terminal is not None and terminal[1] > 0:
+        if reached_eof and terminal is not None and terminal[1] > 0:
             terminal_end = terminal[0] + terminal[1]
             if resolved_end is None and end >= terminal[0] * tb:
                 resolved_end = terminal_end
@@ -103,7 +100,8 @@ def discover(args):
         resolvedEndPts=resolved_end, firstPacket=first["packet"], lastPacket=last["tailPacket"] if codec == "hevc" else last["packet"] - 1,
         startPts=first["pts"], endPts=copied_end(last), draftOnly=True,
         endAtEof=bool(last.get("eof")),
-        driverSha256=inspection.sha(Path(__file__).read_bytes()), av1HelperSha256=inspection.sha(Path(av1.__file__).read_bytes()))
+        driverSha256=inspection.sha(Path(__file__).read_bytes()), av1HelperSha256=inspection.sha(Path(av1.__file__).read_bytes()),
+        streamingHelperSha256=inspection.sha(Path(nal.__file__).read_bytes()))
 
 
 if __name__ == "__main__":

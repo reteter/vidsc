@@ -150,6 +150,84 @@ public sealed class FiniteCopyVerifierTests
         return report;
     }
 
+    [Theory]
+    [InlineData("h264", "yuv420p", 5)]
+    [InlineData("hevc", "yuv420p10le", 21)]
+    public void StreamingNalKeepsDecodeAndPresentationOrdersIndependent(string codec, string format, int reset)
+    {
+        var report = NalStreamingReport(codec, format, reset);
+        var request = StreamingRequest with { CodecName = codec, Streaming = true };
+        var parsed = FiniteCopyVerifier.ParseReport(report.ToJsonString(), request, Job, H, H, H, av1Hash: H, streamingHash: H);
+        Assert.Equal(H, parsed.ConfigSHA256);
+        Assert.Null(parsed.Output);
+        Assert.True(report.ToJsonString().Length < 8192);
+        Assert.NotEqual(report["packetSummary"]!["count"]!.GetValue<int>(), report["presentationSummary"]!["count"]!.GetValue<int>());
+        Assert.NotEqual(report["lastPacketEvidence"]!["pts"]!.GetValue<int>(), report["finalDuration"]!["lastFramePts"]!.GetValue<int>());
+    }
+
+    [Theory]
+    [InlineData("schema")]
+    [InlineData("helper")]
+    [InlineData("drain")]
+    [InlineData("duration")]
+    [InlineData("terminal")]
+    [InlineData("count")]
+    [InlineData("nal")]
+    [InlineData("pixels")]
+    public void StreamingNalRejectsBrokenCompactEvidence(string defect)
+    {
+        var report = NalStreamingReport("hevc", "yuv420p10le", 21);
+        switch (defect)
+        {
+            case "schema": report["schemaVersion"] = 3; break;
+            case "helper": report["build"]!["streamingHelperSha256"] = new string('B', 64); break;
+            case "drain": report["finalDuration"]!["decoderDrained"] = false; break;
+            case "duration": report["finalDuration"]!["rawFinalDuration"] = 0; break;
+            case "terminal": report["finalDuration"]!["lastFramePts"] = 79999; break;
+            case "count": report["packetSummary"]!["count"] = 2000; break;
+            case "nal": report["firstPacketEvidence"]!["nalTypes"] = new JsonArray(6); break;
+            case "pixels": report["presentationSummary"]!["pixelFormat"] = "yuv420p12le"; break;
+        }
+        Assert.ThrowsAny<Exception>(() => FiniteCopyVerifier.ParseReport(report.ToJsonString(),
+            StreamingRequest with { CodecName = "hevc", Streaming = true }, Job, H, H, H, av1Hash: H, streamingHash: H));
+    }
+
+    [Fact]
+    public void StreamingNalOutputRequiresExactNativeVideoTrackEnd()
+    {
+        var report = NalStreamingReport("h264", "yuv420p", 5);
+        var request = StreamingRequest with { CodecName = "h264", Streaming = true };
+        report["outputValidated"] = true; report["outputSha256"] = H; report["outputConfigurationSha256"] = H;
+        report["outputTimeBase"] = TB();
+        report["outputSummary"] = new JsonObject { ["packets"] = report["packetSummary"]!.DeepClone(),
+            ["presentations"] = report["presentationSummary"]!.DeepClone() };
+        var end = new JsonObject { ["numerator"] = 2001, ["denominator"] = 25 };
+        report["terminalEvidence"] = new JsonObject { ["policy"] = "native-video-track-end-v1", ["rawDemuxEnd"] = end,
+            ["declaredVideoTrackEnd"] = end.DeepClone(), ["plannedEnd"] = end.DeepClone(), ["muxGrid"] = TB(), ["reconciled"] = false };
+        Assert.Equal(80040, FiniteCopyVerifier.ParseReport(report.ToJsonString(), request, Job, H, H, H, H, H, H).Output!.EndPts);
+        report["terminalEvidence"]!["rawDemuxEnd"]!["numerator"] = 2000;
+        Assert.Throws<InvalidOperationException>(() => FiniteCopyVerifier.ParseReport(report.ToJsonString(), request, Job, H, H, H, H, H, H));
+    }
+
+    private static JsonObject NalStreamingReport(string codec, string format, int reset)
+    {
+        var report = StreamingReport();
+        report["schemaVersion"] = 4; report["codec"] = codec;
+        report["configurationPolicy"] = "immutable-length-prefixed-container; no-inband-or-side-data; no-RADL";
+        report["codecEvidence"] = new JsonObject { ["kind"] = "nalStreamingPacketV1" };
+        report["packetSummary"]!.AsObject().Remove("timingSha256");
+        report["presentationSummary"]!["count"] = 2000;
+        report["presentationSummary"]!["pixelFormat"] = format;
+        report["presentationSummary"]!.AsObject().Remove("timingSha256");
+        report.Remove("sourceRawPacketDurations");
+        var first = Packet(0); first["nalTypes"] = new JsonArray(reset);
+        var last = Packet(2000); last["pts"] = 79960; last["nalTypes"] = new JsonArray(1);
+        report["firstPacketEvidence"] = first; report["lastPacketEvidence"] = last;
+        var build = report["build"]!.AsObject(); build.Remove("buildSha256"); build["streamingHelperSha256"] = H;
+        build["buildSha256"] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Canonical(build))));
+        return report;
+    }
+
     [Fact]
     public void MalformedAndOversizedReportsCannotQualify()
     {

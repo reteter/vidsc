@@ -14,7 +14,7 @@ namespace Vidsc.Media.Export;
 
 public sealed record FiniteCopyRequest(ProgressiveSourceIdentity Source, string CodecName,
     int FirstPacket, int LastPacket, long StartPts, long EndPts, bool SourceWindow = false,
-    TerminalEndQualification? TerminalEnd = null, bool EndAtEof = false);
+    TerminalEndQualification? TerminalEnd = null, bool EndAtEof = false, bool Streaming = false);
 
 /// <summary>Issued only after a guarded native finite decode; transparent observations cannot mint this capability.</summary>
 public sealed class QualifiedCopyRange
@@ -116,7 +116,8 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
         ValidateRequest(request); Require(jobId != Guid.Empty && !stuckGuards.ContainsKey(jobId), "Invalid or unreconciled job identity.");
         var requestedCancellation = cancellationToken;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        deadline.CancelAfter(TimeSpan.FromSeconds(request.CodecName == "av1" ? 310 : 40));
+        int timeoutSeconds = request.CodecName == "av1" || request.Streaming ? 310 : 40;
+        deadline.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         cancellationToken = deadline.Token;
         var guards = new List<FileStream>(); bool retained = false;
         ToolProcessIdentity? activeProcess = null;
@@ -127,9 +128,11 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             var source = Open(path);
             var driver = Open(driverPath);
             var inspection = Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_inspection_job.py"));
-            var av1 = request.CodecName == "av1" ? Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_av1_codec.py")) : null;
+            var av1 = request.CodecName == "av1" || request.Streaming ? Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_av1_codec.py")) : null;
             string? av1Hash = av1 is null ? null : Digest(av1);
-            Require(source.Length > 0 && (request.CodecName == "av1" || request.SourceWindow || source.Length <= 16 * 1024 * 1024)
+            var streaming = request.Streaming ? Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_nal_streaming.py")) : null;
+            string? streamingHash = streaming is null ? null : Digest(streaming);
+            Require(source.Length > 0 && (request.CodecName == "av1" || request.Streaming || request.SourceWindow || source.Length <= 16 * 1024 * 1024)
                 && driver.Length <= MaxReport && inspection.Length <= MaxReport, "Input budget exceeded.");
             Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId, "Source identity changed.");
             _ = Open(pythonPath);
@@ -139,7 +142,7 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             string sourceHash = await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false);
             string driverHash = Digest(driver), inspectionHash = Digest(inspection);
             var output = outputPath is null ? null : Open(outputPath);
-            Require(output is null || output.Length > 0 && output.Length <= (request.CodecName == "av1" ? 64L * 1024 * 1024 * 1024 : 16 * 1024 * 1024), "Output budget exceeded.");
+            Require(output is null || output.Length > 0 && output.Length <= (request.CodecName == "av1" || request.Streaming ? 64L * 1024 * 1024 * 1024 : 16 * 1024 * 1024), "Output budget exceeded.");
             string? outputHash = output is null ? null : Digest(output);
             List<string> args = ["-B", driverPath, "--input", Path.GetFullPath(path), "--job-id", jobId.ToString("D"),
                 "--source-id", request.Source.SourceId, "--codec", request.CodecName];
@@ -148,9 +151,10 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
                 args.AddRange(["--" + pair.Item1, pair.Item2.ToString(CultureInfo.InvariantCulture)]);
             if (outputPath is not null) args.AddRange(["--output-media", Path.GetFullPath(outputPath)]);
             if (request.SourceWindow) args.Add("--source-window");
+            if (request.Streaming) args.Add("--streaming");
             if (request.EndAtEof) args.Add("--end-at-eof");
             if (request.TerminalEnd is not null) args.AddRange(["--terminal-end-pts", request.EndPts.ToString(CultureInfo.InvariantCulture)]);
-            var process = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(request.CodecName == "av1" ? 310 : 40), cancellationToken, Started, MaxReport).ConfigureAwait(false);
+            var process = await ToolProcessRunner.RunAsync(pythonPath, args, TimeSpan.FromSeconds(timeoutSeconds), cancellationToken, Started, MaxReport).ConfigureAwait(false);
             if (process.Started && !process.ExitConfirmed)
             {
                 retained = true;
@@ -163,7 +167,7 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             Require(InspectionSourceIdentity.Capture(path).IdentityKey == request.Source.SourceId &&
                 await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false) == sourceHash, "Source changed during verification.");
             if (output is not null) Require(Digest(output) == outputHash, "Output changed during verification.");
-            var report = ParseReport(process.StandardOutput, request, jobId, sourceHash, driverHash, inspectionHash, outputHash, av1Hash);
+            var report = ParseReport(process.StandardOutput, request, jobId, sourceHash, driverHash, inspectionHash, outputHash, av1Hash, streamingHash);
             using var parsed = JsonDocument.Parse(process.StandardOutput);
             var reported = parsed.RootElement.GetProperty("build").GetProperty("nativeDllSha256");
             Require(nativeHashes.Count == reported.EnumerateObject().Count(), "Native verifier inventory differs.");
@@ -173,7 +177,7 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
         }
         catch (OperationCanceledException exception) when (!requestedCancellation.IsCancellationRequested && deadline.IsCancellationRequested)
         {
-            throw new InvalidOperationException($"Finite verification exceeded its {(request.CodecName == "av1" ? 310 : 40)}-second invocation budget.", exception);
+            throw new InvalidOperationException($"Finite verification exceeded its {timeoutSeconds}-second invocation budget.", exception);
         }
         finally
         {
@@ -182,12 +186,13 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
     }
 
     internal static FiniteCopyReport ParseReport(string json, FiniteCopyRequest request, Guid jobId,
-        string sourceHash, string driverHash, string inspectionHash, string? outputHash = null, string? av1Hash = null)
+        string sourceHash, string driverHash, string inspectionHash, string? outputHash = null, string? av1Hash = null, string? streamingHash = null)
     {
         ValidateRequest(request);
         Require(Encoding.UTF8.GetByteCount(json) <= MaxReport, "Report budget exceeded.");
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
+        if (request.Streaming) return ParseStreamingNal(root, request, jobId, sourceHash, driverHash, inspectionHash, outputHash, av1Hash, streamingHash);
         if (request.CodecName == "av1") return ParseAv1(root, request, jobId, sourceHash, driverHash, inspectionHash, outputHash, av1Hash);
         Require(N(root, "schemaVersion") == 1 && root.GetProperty("success").GetBoolean(), "Failed finite report.");
         Require(S(root, "jobId") == jobId.ToString("D") && S(root, "sourceIdentity") == request.Source.SourceId &&
@@ -427,11 +432,83 @@ public sealed class FiniteCopyVerifier(string pythonPath, string driverPath)
             root.GetProperty("sourceContainerStartUs").ValueKind == JsonValueKind.Null ? null : N(root, "sourceContainerStartUs"), output);
     }
 
+    private static FiniteCopyReport ParseStreamingNal(JsonElement root, FiniteCopyRequest request, Guid jobId,
+        string sourceHash, string driverHash, string inspectionHash, string? outputHash, string? av1Hash, string? streamingHash)
+    {
+        Require(N(root, "schemaVersion") == 4 && root.GetProperty("success").GetBoolean()
+            && S(root.GetProperty("codecEvidence"), "kind") == "nalStreamingPacketV1"
+            && S(root, "configurationPolicy") == "immutable-length-prefixed-container; no-inband-or-side-data; no-RADL"
+            && S(root, "summaryPolicy") == "sha256-length-prefixed-canonical-json-v1", "Invalid streaming NAL policy.");
+        Require(S(root, "jobId") == jobId.ToString("D") && S(root, "sourceIdentity") == request.Source.SourceId
+            && N(root, "generation") == request.Source.Generation && N(root, "streamIndex") == request.Source.StreamIndex
+            && S(root, "codec") == request.CodecName && N(root, "firstPacket") == request.FirstPacket && N(root, "lastPacket") == request.LastPacket
+            && N(root, "startPts") == request.StartPts && N(root, "endPts") == request.EndPts
+            && Hash(root, "sourceSha256") == sourceHash.ToUpperInvariant() && TB(root) == request.Source.TimeBase, "Stale streaming NAL report.");
+        var build = root.GetProperty("build");
+        Require(Hash(build, "driverSha256") == driverHash.ToUpperInvariant()
+            && Hash(build, "inspectionDriverSha256") == inspectionHash.ToUpperInvariant()
+            && av1Hash is not null && Hash(build, "av1HelperSha256") == av1Hash.ToUpperInvariant()
+            && streamingHash is not null && Hash(build, "streamingHelperSha256") == streamingHash.ToUpperInvariant()
+            && Hash(build, "buildSha256") == Sha(Canonical(build, true)), "Streaming NAL runtime changed.");
+        Require(!string.IsNullOrWhiteSpace(S(build, "pyav")) && build.GetProperty("libraries").EnumerateObject().Any(), "Missing streaming library identity.");
+        var natives = build.GetProperty("nativeDllSha256").EnumerateObject().ToArray();
+        Require(natives.Length > 0 && natives.All(p => p.Name == Path.GetFileName(p.Name)
+            && p.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) && IsHash(p.Value.GetString())), "Invalid streaming native identity.");
+        string config = Hash(root, "codecConfigurationSha256");
+        var packets = root.GetProperty("packetSummary"); var frames = root.GetProperty("presentationSummary");
+        Require(N(packets, "count") == (long)request.LastPacket - request.FirstPacket + 1
+            && N(packets, "bytes") is > 0 and <= 64L * 1024 * 1024 * 1024
+            && N(frames, "count") is > 0 and <= 10_000_000 && N(frames, "firstPts") == request.StartPts
+            && N(frames, "lastPts") >= request.StartPts && N(frames, "lastPts") < request.EndPts
+            && N(frames, "endPts") == request.EndPts && N(frames, "width") is > 0 and <= 16384 && N(frames, "height") is > 0 and <= 16384
+            && checked(N(frames, "width") * N(frames, "height")) <= 1920 * 1080 && S(frames, "pixelFormat") is "yuv420p" or "yuv420p10le"
+            && Seconds(checked(request.EndPts - request.StartPts), request.Source.TimeBase) <= Rational.FromInt64(21600), "Streaming NAL budget or bounds differ.");
+        _ = Hash(packets, "sha256"); _ = Hash(frames, "sha256");
+        var first = root.GetProperty("firstPacketEvidence"); var last = root.GetProperty("lastPacketEvidence");
+        Packet(first, request.FirstPacket, request.Source.TimeBase, request.CodecName);
+        Packet(last, request.LastPacket, request.Source.TimeBase, request.CodecName);
+        Require(N(first, "pts") == request.StartPts && first.GetProperty("nalTypes").EnumerateArray()
+            .Any(n => request.CodecName == "h264" ? n.GetInt32() == 5 : n.GetInt32() is 19 or 20 or 21), "Streaming independent start differs.");
+        var final = root.GetProperty("finalDuration");
+        Require(final.GetProperty("independentlyQualifiedEof").GetBoolean() == request.EndAtEof, "NAL EOF mode differs.");
+        if (request.EndAtEof)
+            Require(final.GetProperty("demuxCompleted").GetBoolean() && final.GetProperty("decoderDrained").GetBoolean()
+                && S(final, "basis") == "native-demux-completion-and-decoder-drain" && N(final, "rawFinalDuration") > 0
+                && N(final, "lastFramePts") == N(frames, "lastPts")
+                && checked(N(final, "lastFramePts") + N(final, "rawFinalDuration")) == request.EndPts
+                && N(final, "terminalEnd") == request.EndPts, "NAL native EOF provenance differs.");
+        Require(root.GetProperty("checks").GetProperty("streamingNativeReconstruction").GetBoolean()
+            && root.GetProperty("checks").EnumerateObject().All(p => p.Value.GetBoolean())
+            && root.GetProperty("errors").GetArrayLength() == 0, "Streaming NAL reconstruction failed.");
+        Require(root.GetProperty("outputValidated").GetBoolean() == (outputHash is not null), "Streaming NAL output mode differs.");
+        FiniteOutputValidation? output = null;
+        if (outputHash is not null)
+        {
+            var actual = root.GetProperty("outputSummary"); var actualFrames = actual.GetProperty("presentations");
+            Require(Hash(root, "outputSha256") == outputHash.ToUpperInvariant() && Hash(root, "outputConfigurationSha256") == config
+                && Canonical(actual.GetProperty("packets")) == Canonical(packets)
+                && Hash(actualFrames, "sha256") == Hash(frames, "sha256") && N(actualFrames, "count") == N(frames, "count")
+                && Equal(actualFrames, frames, "width", "height", "pixelFormat"), "Streaming NAL output proof differs.");
+            var outTb = ReadTB(root.GetProperty("outputTimeBase")); var terminal = root.GetProperty("terminalEvidence");
+            Rational planned = Seconds(checked(request.EndPts - request.StartPts), request.Source.TimeBase);
+            Require(outTb.IsPositive && S(terminal, "policy") == "native-video-track-end-v1"
+                && ReadTB(terminal.GetProperty("rawDemuxEnd")) == planned && ReadTB(terminal.GetProperty("plannedEnd")) == planned
+                && ReadTB(terminal.GetProperty("declaredVideoTrackEnd")) == planned && ReadTB(terminal.GetProperty("muxGrid")) == outTb
+                && !terminal.GetProperty("reconciled").GetBoolean() && N(actualFrames, "firstPts") == 0
+                && Seconds(N(actualFrames, "lastPts"), outTb) == Seconds(checked(N(frames, "lastPts") - request.StartPts), request.Source.TimeBase)
+                && Seconds(N(actualFrames, "endPts"), outTb) == planned, "Streaming NAL terminal evidence differs.");
+            var endPts = planned / outTb; Require(endPts.IsInteger, "NAL output end is outside the mux grid.");
+            output = new(outputHash.ToUpperInvariant(), endPts.Numerator, outTb);
+        }
+        return new(sourceHash.ToUpperInvariant(), config, Sha(Canonical(packets)), Hash(build, "buildSha256"),
+            root.GetProperty("sourceContainerStartUs").ValueKind == JsonValueKind.Null ? null : N(root, "sourceContainerStartUs"), output);
+    }
+
     private static void ValidateRequest(FiniteCopyRequest r) => Require(r.Source.TimeBase.IsPositive && r.Source.Generation >= 0 &&
         r.Source.StreamIndex >= 0 && !string.IsNullOrWhiteSpace(r.Source.SourceId) && r.Source.SourceId.Length <= 256 &&
         r.CodecName is "h264" or "hevc" or "av1" && r.FirstPacket >= 0 && r.LastPacket >= r.FirstPacket
-        && r.LastPacket - r.FirstPacket < (r.CodecName == "av1" ? 10_000_000 : 1024) && r.LastPacket < (r.SourceWindow || r.CodecName == "av1" ? 10_000_000 : 1024) && r.StartPts < r.EndPts
-        && (!r.EndAtEof || r.CodecName == "av1")
+        && r.LastPacket - r.FirstPacket < (r.CodecName == "av1" || r.Streaming ? 10_000_000 : 1024) && r.LastPacket < (r.SourceWindow || r.Streaming || r.CodecName == "av1" ? 10_000_000 : 1024) && r.StartPts < r.EndPts
+        && (!r.EndAtEof || r.CodecName == "av1" || r.Streaming) && (!r.Streaming || r.CodecName is "h264" or "hevc")
         && (r.TerminalEnd is null || !r.SourceWindow && r.TerminalEnd.Source == r.Source && r.TerminalEnd.EndPts == r.EndPts), "Invalid finite request.");
     private static void Packet(JsonElement p, int sequence, Rational tb, string codec)
     {
