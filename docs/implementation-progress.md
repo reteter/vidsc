@@ -64,9 +64,10 @@ authored Main10 and original Main10, including audio timing, both joins,
 quality, cancellation, stale state and no-clobber checks. Canonical CI passes
 473 tests and rollback; non-GUI Release gates pass. The separately authorized
 visible check is recorded in [the evidence record](validation/2026-10-16-m5b-editor.md).
-The visible trial found clipped tab content; a focused layout fix passes CI/package
-and independent review, but its visual repeat remains pending after the user ended
-Computer Use. Complete visible M5b acceptance is not claimed; the PR remains draft.
+The visible trial found clipped tab content; the focused layout fix passes CI/package
+and independent review. The user subsequently reports the final manual checklist
+passed, including default-size scrolling, plan preview, GUI save/reopen and AVC/Main10
+export. This completes bounded M5b workflow acceptance; delivery remains in PR #74.
 Existing qualified backend limits remain; no M1 or universal-format acceptance is claimed.
 
 ## M5a bounded editor acceptance — 16 October 2026
