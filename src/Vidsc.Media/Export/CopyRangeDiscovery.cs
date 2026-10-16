@@ -34,6 +34,9 @@ public sealed class CopyRangeDiscovery(string pythonPath, string driverPath)
             string av1Helper = Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_av1_codec.py");
             owner.Protect(av1Helper);
             string av1Hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(av1Helper)));
+            string streamingHelper = Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_nal_streaming.py");
+            owner.Protect(streamingHelper);
+            string streamingHash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(streamingHelper)));
             string nativeRoot = Path.Combine(Path.GetDirectoryName(pythonPath)!, "Lib", "site-packages", "av.libs");
             foreach (string library in Directory.GetFiles(nativeRoot, "*.dll")) owner.Protect(library);
             if (InspectionSourceIdentity.Capture(sourcePath).IdentityKey != source.SourceId) throw new IOException("Source metadata is stale.");
@@ -60,12 +63,16 @@ public sealed class CopyRangeDiscovery(string pythonPath, string driverPath)
                 throw new InvalidDataException("Stale copy discovery report.");
             if (root.GetProperty("av1HelperSha256").GetString()?.ToUpperInvariant() != av1Hash)
                 throw new InvalidDataException("Copy discovery AV1 helper differs.");
+            string codec = root.GetProperty("codec").GetString()!;
+            bool streaming = codec is "h264" or "hevc";
+            if (streaming && root.GetProperty("streamingHelperSha256").GetString()?.ToUpperInvariant() != streamingHash)
+                throw new InvalidDataException("Copy discovery streaming helper differs.");
             var timeBase = root.GetProperty("timeBase");
             var tb = Rational.Create(timeBase.GetProperty("numerator").GetInt64(), timeBase.GetProperty("denominator").GetInt64());
             if (tb != source.TimeBase) throw new InvalidDataException("Discovery time base differs from source metadata.");
-            var candidate = new FiniteCopyRequest(source, root.GetProperty("codec").GetString()!, root.GetProperty("firstPacket").GetInt32(),
+            var candidate = new FiniteCopyRequest(source, codec, root.GetProperty("firstPacket").GetInt32(),
                 root.GetProperty("lastPacket").GetInt32(), root.GetProperty("startPts").GetInt64(), root.GetProperty("endPts").GetInt64(), SourceWindow: true,
-                EndAtEof: root.TryGetProperty("endAtEof", out var eof) && eof.GetBoolean());
+                EndAtEof: root.TryGetProperty("endAtEof", out var eof) && eof.GetBoolean(), Streaming: streaming);
             return new(candidate, new(new(Seconds(start), new(root.GetProperty("resolvedStartPts").GetInt64(), tb)),
                 new(Seconds(end), new(root.GetProperty("resolvedEndPts").GetInt64(), tb))));
         }

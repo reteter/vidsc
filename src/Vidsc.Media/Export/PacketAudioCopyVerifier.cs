@@ -338,6 +338,7 @@ public sealed class PacketAudioCopyVerifier(string pythonPath, string driverPath
 
     private static void ValidateSelections(QualifiedCopyRange video, IReadOnlyList<AudioCopySelection> selections)
     {
+        Require(!video.Request.Streaming, "Streaming audio requires the native container mapping route.");
         Require(video.Request.CodecName is "h264" or "hevc" && selections.Count is >= 1 and <= 2 &&
             selections.All(s => s.StreamIndex >= 0 && s.StreamIndex != video.Request.Source.StreamIndex) &&
             selections.Select(s => s.StreamIndex).Distinct().Count() == selections.Count, "Unsupported audio selection.");

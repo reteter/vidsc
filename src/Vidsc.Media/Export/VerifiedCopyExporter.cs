@@ -63,6 +63,8 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         }
         try
         {
+            if (qualification.Request.Streaming && matroskaOptions is null)
+                matroskaOptions = new([], false, audioQualification?.AudioSelections, CopyContainer.Mp4);
             if (qualification.Request.CodecName == "av1" && matroskaOptions is null)
                 throw new InvalidOperationException("AV1 copy requires the qualified Matroska route. Choose Matroska output.");
             if (proposal.Selected != qualification.ToObservation())
@@ -75,7 +77,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                 throw new InvalidOperationException("This CLI route requires a verified zero container start time.");
             string? seek = audioQualification is null && matroskaOptions is null
                 ? FormatExactSeek(new(qualification.Request.StartPts, qualification.Request.Source.TimeBase)) : null;
-            string extension = matroskaOptions is null ? ".mp4" : ".mkv";
+            string extension = matroskaOptions is null || matroskaOptions.Container == CopyContainer.Mp4 ? ".mp4" : ".mkv";
             if (!StringComparer.OrdinalIgnoreCase.Equals(Path.GetExtension(destination), extension))
                 throw new ArgumentException($"The selected verified container requires an explicit {extension} destination. Container conversion is never inferred from the extension.", nameof(destination));
             var source = InspectionSourceIdentity.Capture(sourcePath);
@@ -86,7 +88,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             IReadOnlyList<QualifiedAudioTiming>? audioTimings = null;
             if (matroskaOptions is not null)
             {
-                if (qualification.Request.CodecName == "av1")
+                if (qualification.Request.CodecName == "av1" || qualification.Request.Streaming)
                 {
                     // The writer requalifies the guarded source and independently validates the
                     // completed output. Freeze that exact output before using its returned proof.
