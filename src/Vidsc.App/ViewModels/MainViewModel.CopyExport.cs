@@ -71,6 +71,7 @@ public sealed partial class MainViewModel
         if (!IsProjectBound()) return "Accurate video unavailable: project source is missing or changed.";
         if (!AccurateCutVerifier.TryCreate(_toolset, out _, out var reason)) return reason;
         if (SelectedCopyContainer != CopyContainer.Mp4) return "Accurate video requires MP4 output.";
+        if (AccurateDestinationReason(CopyDestination) is { } destinationReason) return destinationReason;
         if (!string.Equals(Path.GetExtension(_sourcePath), ".mp4", StringComparison.OrdinalIgnoreCase)) return "Accurate video currently requires an MP4 source.";
         if (PreserveCopyChapters) return "Accurate video omits chapters. Explicitly uncheck Preserve chapters to continue.";
         if (CopyTracks.Any(t => t.IsSelected && !t.IsAudio)) return "Accurate video does not support subtitles. Explicitly deselect them; no conversion is performed.";
@@ -85,6 +86,10 @@ public sealed partial class MainViewModel
             return "Accurate video requires the qualified AVC 8-bit / HEVC Main10 representation, up to 1920×1080 without rotation. No fallback conversion is performed.";
         return null;
     }
+    private static string? AccurateDestinationReason(string destination) => !string.IsNullOrWhiteSpace(destination)
+        && !string.Equals(Path.GetExtension(destination), ".mp4", StringComparison.OrdinalIgnoreCase)
+            ? "Accurate video requires an explicit .mp4 destination. Correct the destination path before qualifying or exporting."
+            : null;
     public RelayCommand StartCopyExportCommand { get; private set; } = null!;
     public RelayCommand OpenCopyOutputCommand { get; private set; } = null!;
     public RelayCommand ReconcileCopyWorkerCommand { get; private set; } = null!;
@@ -144,6 +149,8 @@ public sealed partial class MainViewModel
             if (dialog.ShowDialog() != true) throw new OperationCanceledException("Destination selection cancelled.");
             CopyDestination = dialog.FileName;
         }
+        if (SelectedExportMode == ExportMode.AccurateVideo && AccurateDestinationReason(CopyDestination) is { } destinationReason)
+            throw new InvalidOperationException(destinationReason);
         var video = _mediaInfo!.PrimaryVideo!;
         var selected = CopyTracks.Where(t => t.IsSelected).ToArray();
         var start = EditorUiBoundary(false) ?? throw new ArgumentException("Invalid In time.");

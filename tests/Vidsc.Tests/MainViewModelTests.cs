@@ -19,6 +19,48 @@ namespace Vidsc.Tests;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public async Task AccurateDestinationRejectsRestoredCopyPathBeforeQueueAndAcceptsCorrection()
+    {
+        AppPaths paths = NewPaths(); string source = Path.Combine(paths.WorkDirectory, "fixture.mp4"); File.WriteAllText(source, "fixture");
+        var tools = ToolsetWithStubCli(paths);
+        Directory.CreateDirectory(tools.SceneDirectory);
+        foreach (string helper in new[] { "vidsc_accurate_job.py", "vidsc_accurate_codec.py", "vidsc_inspection_job.py",
+            "vidsc_accurate_audio.py", "vidsc_audio_copy.py", "vidsc_copy_job.py" })
+            File.WriteAllText(Path.Combine(tools.SceneDirectory, helper), "stub");
+        tools = tools with { ScenePythonPath = Path.Combine(tools.SceneDirectory, "python.exe") };
+        var vm = new MainViewModel(new FakePlaybackEngine(), tools, paths, Dispatcher.CurrentDispatcher,
+            (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)));
+        try
+        {
+            await vm.OpenAsync(source);
+            vm.CopyDestination = Path.Combine(paths.WorkDirectory, "saved-output.mkv");
+            string project = Path.Combine(paths.WorkDirectory, "project.vidsc.json");
+            vm.SaveProject(project); vm.CopyDestination = ""; await vm.LoadProjectAsync(project);
+            Assert.EndsWith(".mkv", vm.CaptureCopySnapshot(false).Destination); // Stream copy behavior is retained.
+            vm.SelectedExportMode = Vidsc.Core.Projects.ExportMode.AccurateVideo;
+            vm.SelectedCopyContainer = Vidsc.Core.Export.CopyContainer.Mp4; vm.PreserveCopyChapters = false;
+            Assert.Contains(".mp4 destination", vm.ExportEligibility);
+            Assert.Throws<InvalidOperationException>(() => vm.CaptureCopySnapshot(false));
+            var idle = vm.WaitForMediaJobIdleAsync();
+            vm.StartCopyExportCommand.Execute(null);
+            Assert.Contains(".mp4 destination", vm.EditorSummary);
+            Assert.Empty(vm.ExportQueue);
+            Assert.Same(idle, vm.WaitForMediaJobIdleAsync());
+            Assert.False(vm.IsMediaJobActive);
+
+            vm.CopyDestination = Path.Combine(paths.WorkDirectory, "corrected-output.MP4");
+            Assert.Contains("requires native qualification", vm.ExportEligibility);
+            Assert.Equal(vm.CopyDestination, vm.CaptureCopySnapshot(true).Destination);
+            vm.CopyDestination = "";
+            Assert.Equal("", vm.CaptureCopySnapshot(false).Destination); // Preview still permits an unset destination.
+            Assert.Contains("requires native qualification", vm.ExportEligibility);
+            Assert.Empty(vm.ExportQueue);
+            Assert.Same(idle, vm.WaitForMediaJobIdleAsync());
+        }
+        finally { await vm.ShutdownAsync(); }
+    }
+
+    [Fact]
     public void AccurateRequestUsesCommonEpochAndRoundsBothRawBoundariesForward()
     {
         var snapshot = new MainViewModel.CopySnapshot("fixture.mp4", "source-id", 1, 7, 2,

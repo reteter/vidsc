@@ -68,6 +68,8 @@ The visible trial found clipped tab content; the focused layout fix passes CI/pa
 and independent review. The user subsequently reports the final manual checklist
 passed, including default-size scrolling, plan preview, GUI save/reopen and AVC/Main10
 export. This completes bounded M5b workflow acceptance; delivery remains in PR #74.
+Review follow-up rejects mismatched accurate output extensions before queue/native
+qualification; the affected regression, canonical CI (474 tests/rollback) and package gates pass.
 Existing qualified backend limits remain; no M1 or universal-format acceptance is claimed.
 
 ## M5a bounded editor acceptance — 16 October 2026
