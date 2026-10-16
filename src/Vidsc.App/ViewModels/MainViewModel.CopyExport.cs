@@ -323,7 +323,9 @@ public sealed partial class MainViewModel
             CopyOutputPath = result.Success ? result.Destination : null;
             CopyExportSummary = result.Success
                 ? $"Stream-copy output validated by full scan. Presentation end: {result.PresentationEnd?.AsSeconds()} s. {result.AudioTimings?.Count ?? 0} copied audio track(s). "
-                    + string.Join(" ", (result.AudioTimings ?? []).Select(t => $"Audio {t.StreamIndex}: packet copy; leading/trailing extensions {t.LeadingExtension}/{t.TrailingExtension} s; not sample-exact."))
+                    + $"Effective video {proposal!.ResolvedInterval.Start.AsSeconds()}–{proposal.ResolvedInterval.End.AsSeconds()} source s; requested boundary deltas {proposal.TotalStartDeltaSeconds}/{proposal.TotalEndDeltaSeconds} s. "
+                    + string.Join(" ", (result.AudioTimings ?? []).Select(t => $"Audio {t.StreamIndex}: packet copy; leading/trailing extensions {t.LeadingExtension}/{t.TrailingExtension} s; not sample-exact."
+                        + (t.NaturalEndShortfall.IsPositive ? $" Source audio naturally ends {t.NaturalEndShortfall} s before video; no silence added." : "")))
                     + (result.MatroskaTerminalReconciled ? " MKV terminal end is bound to the video-track duration; raw decoder duration differs by at most one mux tick (up to 1 ms). Exact last-frame hold is player-dependent." : "")
                 : result.Error ?? "Stream-copy export failed.";
             return result;

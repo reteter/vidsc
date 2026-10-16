@@ -86,16 +86,31 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             IReadOnlyList<QualifiedAudioTiming>? audioTimings = null;
             if (matroskaOptions is not null)
             {
-                var current = await verifier.QualifyUnderLeaseAsync(sourcePath, qualification.Request, jobId,
-                    lease, cancellationToken, Started).ConfigureAwait(false);
-                if (current.ManifestID != qualification.ManifestID || current.SourceSHA256 != qualification.SourceSHA256
-                    || current.BuildIdentity != qualification.BuildIdentity)
-                    throw new InvalidOperationException("The source finite qualification changed.");
-                await matroskaVerifier!.RunUnderLeaseAsync(sourcePath, current, matroskaOptions, jobId,
-                    transaction.TemporaryPath, false, lease, cancellationToken, Started).ConfigureAwait(false);
-                transaction.ProtectForValidation();
-                output = await matroskaVerifier.RunUnderLeaseAsync(sourcePath, current, matroskaOptions, jobId,
-                    transaction.TemporaryPath, true, lease, cancellationToken, Started).ConfigureAwait(false);
+                if (qualification.Request.CodecName == "av1")
+                {
+                    // The writer requalifies the guarded source and independently validates the
+                    // completed output. Freeze that exact output before using its returned proof.
+                    output = await matroskaVerifier!.RunUnderLeaseAsync(sourcePath, qualification, matroskaOptions, jobId,
+                        transaction.TemporaryPath, false, lease, cancellationToken, Started).ConfigureAwait(false);
+                    transaction.ProtectForValidation();
+                    await using var protectedOutput = new FileStream(transaction.TemporaryPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    string hash = await SourceContentHash.ComputeAsync(protectedOutput, cancellationToken).ConfigureAwait(false);
+                    if (!StringComparer.OrdinalIgnoreCase.Equals(hash, output.OutputSHA256))
+                        throw new InvalidOperationException("The validated Matroska output changed before protection.");
+                }
+                else
+                {
+                    var current = await verifier.QualifyUnderLeaseAsync(sourcePath, qualification.Request, jobId,
+                        lease, cancellationToken, Started).ConfigureAwait(false);
+                    if (current.ManifestID != qualification.ManifestID || current.SourceSHA256 != qualification.SourceSHA256
+                        || current.BuildIdentity != qualification.BuildIdentity)
+                        throw new InvalidOperationException("The source finite qualification changed.");
+                    await matroskaVerifier!.RunUnderLeaseAsync(sourcePath, current, matroskaOptions, jobId,
+                        transaction.TemporaryPath, false, lease, cancellationToken, Started).ConfigureAwait(false);
+                    transaction.ProtectForValidation();
+                    output = await matroskaVerifier.RunUnderLeaseAsync(sourcePath, current, matroskaOptions, jobId,
+                        transaction.TemporaryPath, true, lease, cancellationToken, Started).ConfigureAwait(false);
+                }
                 audioTimings = output.AudioTimings;
                 progress?.Report(new(jobId, new(output.EndPts, output.TimeBase)));
             }

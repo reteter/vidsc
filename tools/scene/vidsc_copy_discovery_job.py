@@ -15,7 +15,7 @@ def discover(args):
     start, end = Fraction(args.start), Fraction(args.end)
     if start >= end:
         raise ValueError("Empty requested interval")
-    budget = inspection.Budget()
+    budget = av1.StreamingBudget()
     candidates, resolved_start, resolved_end = [], None, None
     with inspection.NativeDecoderLogGate() as errors, av.open(args.input) as container:
         stream = container.streams[args.stream]
@@ -25,9 +25,11 @@ def discover(args):
             codec = "av1"
         if stream.type != "video" or codec not in ("h264", "hevc", "av1") or tb is None:
             raise ValueError("Configured AVC/HEVC video is required")
+        if codec != "av1": budget = inspection.Budget()
         av1.configuration(extra) if codec == "av1" else inspection.validate_configuration(codec, extra)
         inspection.configure_decoder(ctx)
         ordinal, previous_pts, last_rap = 0, None, None
+        terminal = None; reached_eof = False
         for packet in container.demux(stream):
             budget.check()
             if packet.size:
@@ -42,9 +44,18 @@ def discover(args):
                         # One predecessor is sufficient for draft policy selection, never a safety claim.
                         candidates = [candidate]
                     else:
-                        if len(candidates) >= 128:
-                            raise ValueError("Boundary candidate budget exceeded")
                         candidates.append(candidate)
+                        # Interior resets cannot improve either selected boundary. Keep
+                        # nearest starts and the first two successors at each requested edge.
+                        if codec == "av1":
+                            useful = []
+                            for boundary in (start, end):
+                                before = [p for p in candidates if p["pts"] * tb <= boundary]
+                                after = [p for p in candidates if p["pts"] * tb > boundary]
+                                useful.extend(before[-1:] + after[:2])
+                            candidates = list({p["packet"]: p for p in useful}.values())
+                        elif len(candidates) > 128:
+                            raise ValueError("Boundary candidate budget exceeded")
                 elif codec == "hevc" and last_rap is not None and set(record["nalTypes"]) & {8, 9}:
                     last_rap["tailPacket"] = ordinal
                 ordinal += 1
@@ -57,12 +68,20 @@ def discover(args):
                     if candidate["pts"] == previous_pts:
                         candidate["endPts"] = frame.pts
                 previous_pts = frame.pts
+                terminal = (frame.pts, frame.duration)
                 if resolved_start is None and frame.pts * tb >= start:
                     resolved_start = frame.pts
                 if resolved_end is None and frame.pts * tb >= end:
                     resolved_end = frame.pts
             if resolved_end is not None and len([p for p in candidates if p["pts"] * tb >= end]) >= 2:
                 break
+        else:
+            reached_eof = True
+        if codec == "av1" and reached_eof and terminal is not None and terminal[1] > 0:
+            terminal_end = terminal[0] + terminal[1]
+            if resolved_end is None and end >= terminal[0] * tb:
+                resolved_end = terminal_end
+            candidates.append(dict(packet=ordinal, pts=terminal_end, tailPacket=ordinal - 1, endPts=terminal_end, eof=True))
         if errors.failed:
             raise ValueError("NativeDecoderError")
     if resolved_start is None or resolved_end is None or resolved_start >= resolved_end:
@@ -83,6 +102,7 @@ def discover(args):
         streamIndex=args.stream, codec=codec, timeBase=inspection.rational(tb), resolvedStartPts=resolved_start,
         resolvedEndPts=resolved_end, firstPacket=first["packet"], lastPacket=last["tailPacket"] if codec == "hevc" else last["packet"] - 1,
         startPts=first["pts"], endPts=copied_end(last), draftOnly=True,
+        endAtEof=bool(last.get("eof")),
         driverSha256=inspection.sha(Path(__file__).read_bytes()), av1HelperSha256=inspection.sha(Path(av1.__file__).read_bytes()))
 
 

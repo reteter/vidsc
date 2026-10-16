@@ -248,6 +248,7 @@ def parser():
     command.add_argument("--output-media")
     command.add_argument("--source-window", action="store_true")
     command.add_argument("--terminal-end-pts", type=int)
+    command.add_argument("--end-at-eof", action="store_true")
     return command
 
 

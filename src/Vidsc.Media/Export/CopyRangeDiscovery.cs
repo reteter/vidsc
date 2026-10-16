@@ -45,7 +45,7 @@ public sealed class CopyRangeDiscovery(string pythonPath, string driverPath)
                 "--source-id", source.SourceId, "--generation", source.Generation.ToString(CultureInfo.InvariantCulture),
                 "--stream", source.StreamIndex.ToString(CultureInfo.InvariantCulture), "--start=" + Fraction(start), "--end=" + Fraction(end),
                 "--policy", policy.ToString().ToLowerInvariant()];
-            var run = await ToolProcessRunner.RunAsync(pythonPath, arguments, TimeSpan.FromSeconds(40), cancellationToken,
+            var run = await ToolProcessRunner.RunAsync(pythonPath, arguments, TimeSpan.FromSeconds(310), cancellationToken,
                 identity => { owner.ObserveStarted(identity); processStarted?.Invoke(identity); }).ConfigureAwait(false);
             if (run.Started && !run.ExitConfirmed)
                 throw new NavigationProcessStuckException(run.ProcessId ?? -1, new IOException("Boundary discovery exit was not confirmed."));
@@ -64,7 +64,8 @@ public sealed class CopyRangeDiscovery(string pythonPath, string driverPath)
             var tb = Rational.Create(timeBase.GetProperty("numerator").GetInt64(), timeBase.GetProperty("denominator").GetInt64());
             if (tb != source.TimeBase) throw new InvalidDataException("Discovery time base differs from source metadata.");
             var candidate = new FiniteCopyRequest(source, root.GetProperty("codec").GetString()!, root.GetProperty("firstPacket").GetInt32(),
-                root.GetProperty("lastPacket").GetInt32(), root.GetProperty("startPts").GetInt64(), root.GetProperty("endPts").GetInt64(), SourceWindow: true);
+                root.GetProperty("lastPacket").GetInt32(), root.GetProperty("startPts").GetInt64(), root.GetProperty("endPts").GetInt64(), SourceWindow: true,
+                EndAtEof: root.TryGetProperty("endAtEof", out var eof) && eof.GetBoolean());
             return new(candidate, new(new(Seconds(start), new(root.GetProperty("resolvedStartPts").GetInt64(), tb)),
                 new(Seconds(end), new(root.GetProperty("resolvedEndPts").GetInt64(), tb))));
         }

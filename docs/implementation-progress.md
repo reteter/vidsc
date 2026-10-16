@@ -7,6 +7,18 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## AV1/MKV streaming and original EOF — 16 October 2026
+
+The #68 increment streams larger AV1/MKV selections through actual source EOF with
+compact packet/presentation digests and bounded audio context. Final packaged
+export preserves 470 video presentations/payloads and 645 E-AC-3 packets in a
+27,527,228-byte output; independent timing/PCM and cancellation/preservation checks
+pass. The ordinary workflow uses three native workers and took 43.78 seconds in
+this correctness run. Canonical CI passes 454 tests and rollback; native/package
+gates pass without GUI smoke. [The evidence record](validation/2026-10-16-av1-streaming-eof.md)
+states the duration-normalization fix, limits and natural audio EOF disclosure.
+This does not establish universal AV1 support, performance acceptance or full M5b.
+
 ## AV1/MKV stream-copy integration — 16 October 2026
 
 The #67 increment adds finite AV1/MKV and qualified E-AC-3 copying through the

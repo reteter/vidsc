@@ -19,7 +19,7 @@ public sealed record AudioCopySelection(int StreamIndex, string CodecName);
 public sealed record QualifiedAudioTiming(int StreamIndex, string CodecName,
     CopyTimeInterval IntendedSourceInterval, CopyTimeInterval RetainedSourceInterval,
     CopyTimeInterval OutputAudibleInterval, CopyTimeInterval OutputRetainedInterval,
-    Rational LeadingExtension, Rational TrailingExtension);
+    Rational LeadingExtension, Rational TrailingExtension, Rational NaturalEndShortfall = default);
 
 public sealed class QualifiedAudioCopyRange
 {
