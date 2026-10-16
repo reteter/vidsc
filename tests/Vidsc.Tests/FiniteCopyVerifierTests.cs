@@ -51,6 +51,15 @@ public sealed class FiniteCopyVerifierTests
     }
 
     [Fact]
+    public void NalReportCannotAuthorizeAv1Request()
+    {
+        var report = Report();
+        report["codec"] = "av1";
+        Assert.Throws<InvalidOperationException>(() => FiniteCopyVerifier.ParseReport(report.ToJsonString(),
+            Request with { CodecName = "av1" }, Job, H, H, H, av1Hash: H));
+    }
+
+    [Fact]
     public void MalformedAndOversizedReportsCannotQualify()
     {
         Assert.ThrowsAny<JsonException>(() => FiniteCopyVerifier.ParseReport("{", Request, Job, H, H, H));

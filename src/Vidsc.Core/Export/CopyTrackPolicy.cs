@@ -31,7 +31,7 @@ public static class CopyTrackPolicy
         selection = null;
         rejection = "Unsupported or incomplete copied-audio observation.";
         if (!Valid(video) || !Valid(track) || track.Kind != CopyTrackKind.Audio
-            || track.Codec is not ("aac" or "ac3") || string.IsNullOrWhiteSpace(context.ConfigurationId)
+            || track.Codec is not ("aac" or "ac3" or "eac3") || string.IsNullOrWhiteSpace(context.ConfigurationId)
             || string.IsNullOrWhiteSpace(context.Provenance) || context.RequiredPrerollOrdinals is null
             || context.PrimingSamples is null or < 0 || context.SkipStartSamples is null or < 0
             || context.SkipEndSamples is null or < 0) return false;
@@ -81,8 +81,8 @@ public static class CopyTrackPolicy
         {
             bool known = track.Kind switch
             {
-                CopyTrackKind.Video => track.Codec is "h264" or "hevc",
-                CopyTrackKind.Audio => track.Codec is "aac" or "ac3",
+                CopyTrackKind.Video => track.Codec is "h264" or "hevc" || container == CopyContainer.Matroska && track.Codec == "av1",
+                CopyTrackKind.Audio => track.Codec is "aac" or "ac3" || container == CopyContainer.Matroska && track.Codec == "eac3",
                 CopyTrackKind.Subtitle => track.Codec == "subrip",
                 _ => false
             };

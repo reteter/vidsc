@@ -9,7 +9,8 @@ namespace Vidsc.Media.Export;
 
 public sealed record VerifiedCopyExportResult(Guid JobId, bool Success, bool Cancelled,
     bool ExitConfirmed, string? Destination, string? JournalPath, string? Error,
-    RationalTime? PresentationEnd = null, IReadOnlyList<QualifiedAudioTiming>? AudioTimings = null);
+    RationalTime? PresentationEnd = null, IReadOnlyList<QualifiedAudioTiming>? AudioTimings = null,
+    bool MatroskaTerminalReconciled = false);
 
 public sealed record CopyExportProgress(Guid JobId, RationalTime CopiedTime);
 
@@ -40,7 +41,8 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         string destination, string journalDirectory, CancellationToken cancellationToken,
         Action<ToolProcessIdentity>? processStarted = null, IProgress<CopyExportProgress>? progress = null)
         => ExportAsync(sourcePath, qualification, null, proposal, destination, journalDirectory,
-            cancellationToken, processStarted, progress, options with { SubtitleStreamIndices = options.SubtitleStreamIndices.ToArray() });
+            cancellationToken, processStarted, progress, options with { SubtitleStreamIndices = options.SubtitleStreamIndices.ToArray(),
+                AudioSelections = options.AudioSelections?.ToArray() });
 
     private async Task<VerifiedCopyExportResult> ExportAsync(string sourcePath,
         QualifiedCopyRange qualification, QualifiedAudioCopyRange? audioQualification,
@@ -61,6 +63,8 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
         }
         try
         {
+            if (qualification.Request.CodecName == "av1" && matroskaOptions is null)
+                throw new InvalidOperationException("AV1 copy requires the qualified Matroska route. Choose Matroska output.");
             if (proposal.Selected != qualification.ToObservation())
                 throw new InvalidOperationException("The proposal does not match the qualified finite manifest.");
             if (audioQualification is not null && audioVerifier is null)
@@ -92,6 +96,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
                 transaction.ProtectForValidation();
                 output = await matroskaVerifier.RunUnderLeaseAsync(sourcePath, current, matroskaOptions, jobId,
                     transaction.TemporaryPath, true, lease, cancellationToken, Started).ConfigureAwait(false);
+                audioTimings = output.AudioTimings;
                 progress?.Report(new(jobId, new(output.EndPts, output.TimeBase)));
             }
             else if (audioQualification is not null)
@@ -147,7 +152,7 @@ public sealed class VerifiedCopyExporter(FiniteCopyVerifier verifier, FfmpegCli 
             transaction.Commit(new(jobId, source.IdentityKey, transaction.TemporaryPath, output.OutputSHA256));
             completed = true;
             return new(jobId, true, false, true, Path.GetFullPath(destination), transaction.JournalPath, null,
-                new(output.EndPts, output.TimeBase), audioTimings);
+                new(output.EndPts, output.TimeBase), audioTimings, output.TerminalReconciled);
         }
         catch (NavigationProcessStuckException exception)
         {
