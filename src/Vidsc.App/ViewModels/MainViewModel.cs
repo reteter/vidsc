@@ -68,6 +68,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly object _shutdownLock = new();
 
     private Task _transportChain = Task.CompletedTask;
+    internal enum LifecycleTransportKind { Surface, PlaybackRecovery }
+    private readonly Dictionary<LifecycleTransportKind, (SourceGeneration Source, string Label, Action Action, Action? Barrier)> _lifecycleTransport = [];
+    private bool _lifecycleTransportQueued;
+    internal int PendingLifecycleTransportKinds { get { lock (_transportLock) return _lifecycleTransport.Count; } }
     internal const int MaximumTransportCommands = 16;
     private int _pendingTransportCommands;
     internal int PendingTransportCommands => Volatile.Read(ref _pendingTransportCommands);
@@ -743,7 +747,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void SeekExact(long ticks) => QueueNavigationSeek(ticks, true);
 
-    private void QueueNavigationSeek(long ticks, bool accurate)
+    private bool QueueNavigationSeek(long ticks, bool accurate)
     {
         _indexCancellation?.Cancel();
         SetDesiredTicks(ticks, true);
@@ -765,6 +769,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ResetSeekTiming();
             StatusLine = "Transport queue is full or unavailable. Wait for queued operations, then seek again.";
         }
+        return accepted;
     }
 
     public void ToggleMute()
@@ -777,8 +782,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (_engine is not FlyleafPlaybackEngine engine) return;
         engine.SetPresentationSurfaceAvailable(available);
-        EnqueueTransport(available ? "SURFACE restored" : "SURFACE minimized",
-            () => engine.ApplyPresentationSurfaceTransition(available));
+        Action transition = () => engine.ApplyPresentationSurfaceTransition(available);
+        EnqueueLifecycleTransport(LifecycleTransportKind.Surface, available ? "SURFACE restored" : "SURFACE minimized",
+            transition, available ? null : transition);
     }
 
     public void SetRotation(int degrees)
@@ -811,10 +817,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (!QueueNavigationSeek((long)ticks, false)) return;
         _lastApproximateSeekTicks = now;
         _approximateSeekCount++;
         OnPropertyChanged(nameof(ApproximateSeekCount));
-        SeekApproximate((long)ticks);
         StatusLine = "Approximate seek (keyframe) issued.";
         RefreshReadouts();
     }
@@ -828,7 +834,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (!IsOpened)
             return;
 
-        SeekExact((long)ticks);
+        if (!QueueNavigationSeek((long)ticks, true)) return;
         StatusLine = "Exact seek issued.";
         AppendLog("SEEK exact " + TimeText.Format((long)ticks));
         RefreshReadouts();
@@ -864,7 +870,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ticks = Math.Clamp(ticks, 0, _durationTicks);
 
         SetDesiredTicks(ticks, moveSlider: true);
-        SeekExact(ticks);
+        if (!QueueNavigationSeek(ticks, true)) return;
         StatusLine = "Exact seek issued from the time entry.";
         AppendLog("SEEK exact (entry) " + TimeText.Format(ticks));
         RefreshReadouts();
@@ -941,7 +947,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             ReclaimOptionalCaches();
             DiagnosticsText = _engine.GetDiagnostics().ToDisplayText()
                 + $"\n{MediaWorkerOwnership.DiagnosticText}\nsource generation={_openToken}; thumbnail generation={_thumbnailVersion}"
-                + $"\ntransport running/queued={PendingTransportCommands}/{MaximumTransportCommands}; export queue limit=100"
+                + $"\ntransport running/queued={PendingTransportCommands}/{MaximumTransportCommands}; coalesced lifecycle kinds={PendingLifecycleTransportKinds}/2; export queue limit=100"
                 + $"\ncache={DerivedCache.Snapshot}; disk limit={_cachePolicy.DiskBytes / DerivedCachePolicy.GiB} GiB"
                 + $"\nvisible decoded thumbnails={ThumbnailBytes} bytes / {_cachePolicy.ThumbnailBytes}; {_cachePressureText}";
             DiagnosticsText += $"\nlast seek to observed readout={_lastObservedSeekMilliseconds?.ToString("F1") ?? "pending/unavailable"} ms (includes UI sampling)"
@@ -1121,7 +1127,53 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void OnPlaybackRestartRequested(object? sender, EventArgs args)
     {
         if (sender is FlyleafPlaybackEngine engine)
-            EnqueueTransport("PRESENTATION playback recovery", engine.RestartInvalidatedPlayback);
+            EnqueueLifecycleTransport(LifecycleTransportKind.PlaybackRecovery, "PRESENTATION playback recovery", engine.RestartInvalidatedPlayback);
+    }
+
+    internal void EnqueueLifecycleTransport(LifecycleTransportKind kind, string label, Action action, Action? requiredBarrier = null)
+    {
+        lock (_transportLock)
+        {
+            if (_shutdownRequested) return;
+            // One reserved continuation with two latest intents. A coalesced restore must
+            // retain the minimize barrier that pauses playback and invalidates its old loop.
+            SourceGeneration source = _engine.Positions.Generation;
+            if (requiredBarrier is null && _lifecycleTransport.TryGetValue(kind, out var previous) && previous.Source == source)
+                requiredBarrier = previous.Barrier;
+            _lifecycleTransport[kind] = (source, label, action, requiredBarrier);
+            if (_lifecycleTransportQueued) return;
+            _lifecycleTransportQueued = true;
+            _transportChain = _transportChain.ContinueWith(_ => DrainLifecycleTransport(),
+                CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+        }
+    }
+
+    private void DrainLifecycleTransport()
+    {
+        while (true)
+        {
+            (SourceGeneration Source, string Label, Action Action, Action? Barrier) work;
+            lock (_transportLock)
+            {
+                if (_lifecycleTransport.Count == 0)
+                {
+                    _lifecycleTransportQueued = false;
+                    return;
+                }
+                var pending = _lifecycleTransport.First();
+                work = pending.Value;
+                _lifecycleTransport.Remove(pending.Key);
+            }
+            try
+            {
+                if (!_shutdownRequested && work.Source == _engine.Positions.Generation)
+                {
+                    if (work.Barrier is not null && !ReferenceEquals(work.Barrier, work.Action)) work.Barrier();
+                    if (!_shutdownRequested && work.Source == _engine.Positions.Generation) work.Action();
+                }
+            }
+            catch (Exception exception) { AppendLog($"{work.Label} failed: {exception.Message}"); }
+        }
     }
 
     private bool EnqueueTransport(string label, Action action)

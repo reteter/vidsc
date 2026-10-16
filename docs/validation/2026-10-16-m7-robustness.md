@@ -10,8 +10,9 @@ measurements or the complete M7 B1–B6 performance gate.
   ownership when child exit cannot be confirmed. Admission now permits at most
   eight waiting callers. Overflow reports an actionable error; cancellation removes
   a waiter without releasing another job's slot. The editor's existing export queue
-  remains limited to 100 items. The playback transport chain permits 16 running/
-  queued commands, skips obsolete queued seeks and reports overflow. A refused seek
+  remains limited to 100 items. The playback transport chain permits 16 ordinary
+  running/queued commands plus one reserved lifecycle drain with two coalesced kinds,
+  skips obsolete queued seeks and reports overflow. A refused seek
   clears target ownership/timing so a rejected command cannot certify a selection.
   Source generations and explicit cancellation remain
   distinct: rejecting a stale result does not claim the running process has exited.
@@ -36,7 +37,7 @@ measurements or the complete M7 B1–B6 performance gate.
 - Cache I/O failures cannot discard successful thumbnail/waveform/scene results.
   Waveform's required owned report scratch is separate from optional report storage.
   This does not imply decoding can proceed when its required scratch storage is full.
-- Only the eight visible previews are decoded into WPF images. Explicit decode
+- Only the eight visible previews are decoded into WPF images. Validated encoded
   dimensions and byte accounting bound publication independently of normal-memory
   targets. Source/viewport invalidation clears images. Available physical memory
   and available DXGI local/nonlocal usage/budget readings trigger preview reclamation
@@ -132,3 +133,28 @@ No reduced-resolution neighborhood cache was added: no new accepted measurement
 established a backward-step bottleneck requiring it. Physical full-disk, hard power
 loss and long-GOP playback performance remain distinct from simulated optional I/O
 failure and owned staging recovery checks.
+
+## PR review repairs
+
+Ordinary transport saturation previously also rejected minimize/restore and playback
+recovery. Those callbacks now use the reserved serialized drain, retaining only the
+latest intent per kind and the required minimize barrier before a coalesced restore.
+This preserves native pause/resume semantics rather than only the final surface flag.
+Every action retains source/shutdown checks, including a second check after a native
+barrier that can block. A running minimize can accept a later restore without adding
+an unbounded chain.
+
+Scrubbing, drag release and typed exact seeks now propagate queue acceptance before
+publishing success status/logs or advancing approximate-seek counters/throttling.
+Rejected requests retain retry guidance. JPEG decoding keeps the worker-validated
+encoded dimensions instead of forcing both dimensions to 144x80; portrait, wide and
+4:3 fixtures preserve their aspect ratios within the same byte budget.
+
+Focused view-model and real WPF JPEG-decode regressions pass 28 cases without GUI;
+canonical CI passes 517 tests, Release compilation and promotion/rollback. Independent
+review of the final lifecycle/source/shutdown and decoding delta has no remaining findings.
+They cover saturated coalescing with native barrier semantics, updates during a running
+transition, source/shutdown invalidation before and during a retained barrier, rejected
+UI seeks and successful retries, and three non-16:9 JPEG dimensions. Existing native
+export/cache proofs are retained at their named builds; these repairs do not change
+those adapters or establish visible playback acceptance.
