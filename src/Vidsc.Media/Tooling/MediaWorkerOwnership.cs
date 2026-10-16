@@ -6,4 +6,12 @@ namespace Vidsc.Media.Tooling;
 public static class MediaWorkerOwnership
 {
     public static bool TryReconcile(Guid jobId) => CopyJobAdmission.TryReconcile(jobId);
+    public static string DiagnosticText
+    {
+        get
+        {
+            var state = CopyJobAdmission.Snapshot;
+            return $"worker: busy={state.Busy}; queued={state.Pending}/8; retained={state.Retained}; running limit=1";
+        }
+    }
 }

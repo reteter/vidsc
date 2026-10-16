@@ -36,11 +36,11 @@ internal static class AnalysisReportCache
 
     internal static string? Read(string directory, string key, int maxBytes, string job, long generation)
     {
-        string path = Path.Combine(directory, key + ".json");
-        if (!File.Exists(path) || new FileInfo(path).Length > maxBytes) return null;
+        string? json = DerivedCache.Read(directory, key, maxBytes);
+        if (json is null) return null;
         try
         {
-            var report = JsonNode.Parse(File.ReadAllText(path))?.AsObject();
+            var report = JsonNode.Parse(json)?.AsObject();
             if (report is null) return null;
             report["jobId"] = job; report["generation"] = generation;
             return report.ToJsonString();
@@ -49,21 +49,5 @@ internal static class AnalysisReportCache
     }
 
     internal static void Write(string directory, string key, string json)
-    {
-        try
-        {
-            Directory.CreateDirectory(directory);
-            // A cache is optional; atomically publish one validated report, then bound its disk use.
-            string target = Path.Combine(directory, key + ".json"), pending = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            try { File.WriteAllText(pending, json); File.Move(pending, target, true); }
-            finally { if (File.Exists(pending)) File.Delete(pending); }
-            long total = 0;
-            foreach (var file in new DirectoryInfo(directory).EnumerateFiles("*.json").OrderByDescending(f => f.LastWriteTimeUtc))
-            {
-                total += file.Length;
-                if (total > 128L * 1024 * 1024) file.Delete();
-            }
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-    }
+        => DerivedCache.Write(directory, key, json);
 }

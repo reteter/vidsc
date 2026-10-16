@@ -10,6 +10,22 @@ public sealed partial class MainViewModel
     public ObservableCollection<TimelineThumbnail> VisibleThumbnails { get; } = [];
     public RelayCommand LoadThumbnailsCommand { get; private set; } = null!;
     private long _thumbnailVersion;
+    private readonly DerivedCachePolicy _cachePolicy = DerivedCachePolicy.FromEnvironment();
+    private long _lastPressureCheck;
+    private string _cachePressureText = "not sampled";
+    private long ThumbnailBytes => VisibleThumbnails.Sum(t => (long)t.Image.PixelWidth * t.Image.PixelHeight * 4);
+
+    private bool ReclaimOptionalCaches()
+    {
+        var memory = _memorySnapshotReader();
+        var gpu = (_engine as Vidsc.Media.Playback.FlyleafPlaybackEngine)?.CaptureBenchmarkTelemetry().GpuMemory;
+        bool pressure = Services.CachePressure.ShouldReclaim(memory.Available, memory.Total,
+            gpu?.Local?.CurrentUsage ?? 0, gpu?.Local?.Budget ?? 0)
+            || Services.CachePressure.ShouldReclaim(0, 0, gpu?.NonLocal?.CurrentUsage ?? 0, gpu?.NonLocal?.Budget ?? 0);
+        _cachePressureText = $"available RAM={memory.Available / 1048576} MiB; DXGI local={gpu?.Local?.CurrentUsage}/{gpu?.Local?.Budget}; pressure={pressure}";
+        if (pressure || ThumbnailBytes > _cachePolicy.ThumbnailBytes) VisibleThumbnails.Clear();
+        return pressure;
+    }
     private async Task LoadVisibleThumbnailsAsync()
     {
         if (_ffmpeg is null || _metadataIdentity is not { } source || _mediaInfo?.PrimaryVideo is not { } video
@@ -21,6 +37,7 @@ public sealed partial class MainViewModel
         VisibleThumbnails.Clear();
         try
         {
+            if (ReclaimOptionalCaches()) { StatusLine = "Thumbnail previews deferred while memory is under pressure."; return; }
             var token = _mediaJobCancellation!.Token;
             long[] targets = Enumerable.Range(0, 8).Select(i => (long)Math.Clamp(
                 viewport.Start + (i + .5) * viewport.Span / 8, 0, Math.Max(0, _durationTicks - 1))).ToArray();
@@ -32,10 +49,14 @@ public sealed partial class MainViewModel
                 origin, sourceToken, targets, cache, token, ObserveMediaProcess), token);
             token.ThrowIfCancellationRequested();
             if (version != _thumbnailVersion || sourceToken != _openToken || viewport != _viewport || !source.MatchesCurrentFile()) return;
+            if (ReclaimOptionalCaches()) { StatusLine = "Thumbnail previews discarded while memory is under pressure."; return; }
             foreach (var thumbnail in thumbnails)
             {
                 using var stream = new MemoryStream(thumbnail.Jpeg);
-                var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
+                var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.DecodePixelWidth = 144; bitmap.DecodePixelHeight = 80;
+                bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
+                if (ThumbnailBytes + (long)bitmap.PixelWidth * bitmap.PixelHeight * 4 > _cachePolicy.ThumbnailBytes) break;
                 long actual = checked((long)((decimal)thumbnail.Pts * thumbnail.TimeBaseNumerator * TimeSpan.TicksPerSecond / thumbnail.TimeBaseDenominator - (decimal)origin * TimeSpan.TicksPerSecond));
                 VisibleThumbnails.Add(new(bitmap, Vidsc.Core.Time.TimeText.Format(actual)));
             }

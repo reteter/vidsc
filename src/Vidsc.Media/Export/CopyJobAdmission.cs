@@ -9,11 +9,22 @@ internal static class CopyJobAdmission
     private static readonly SemaphoreSlim Slot = new(1, 1);
     private static readonly object Sync = new();
     private static Lease? retainedOwner;
+    internal const int MaximumPendingJobs = 8;
+    private static int pending;
+    internal static (int Pending, bool Busy, bool Retained) Snapshot
+    { get { lock (Sync) return (Volatile.Read(ref pending), Slot.CurrentCount == 0, retainedOwner is not null); } }
 
     internal static async Task<Lease> EnterAsync(Guid jobId, CancellationToken cancellationToken)
     {
         if (jobId == Guid.Empty) throw new ArgumentException("A job identity is required.", nameof(jobId));
-        await Slot.WaitAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Interlocked.Increment(ref pending) > MaximumPendingJobs)
+        {
+            Interlocked.Decrement(ref pending);
+            throw new InvalidOperationException("Media worker queue is full. Cancel obsolete work and retry.");
+        }
+        try { await Slot.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        finally { Interlocked.Decrement(ref pending); }
         return new Lease(jobId);
     }
 
