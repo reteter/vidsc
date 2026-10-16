@@ -19,6 +19,9 @@ including repeated started cancellation and source/guard preservation. The
 [evidence record](validation/2026-10-16-m7-robustness.md) states exact boundaries.
 The final optional file-reparse guard separately passes nine current-byte cache
 controls and canonical CI; the earlier adapter freeze remains explicitly identified.
+PR review repairs preserve saturated lifecycle transitions and their native pause
+barrier, rejected UI-seek feedback and thumbnail aspect ratios. Focused 28 cases and
+canonical CI (517 tests/rollback) pass; the final narrow review is clean.
 This completes the authorized backend robustness increment; deferred M1 and full
 M7 B1–B6 performance acceptance remain unclaimed.
 

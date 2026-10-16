@@ -52,10 +52,7 @@ public sealed partial class MainViewModel
             if (ReclaimOptionalCaches()) { StatusLine = "Thumbnail previews discarded while memory is under pressure."; return; }
             foreach (var thumbnail in thumbnails)
             {
-                using var stream = new MemoryStream(thumbnail.Jpeg);
-                var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                bitmap.DecodePixelWidth = 144; bitmap.DecodePixelHeight = 80;
-                bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
+                var bitmap = DecodeThumbnail(thumbnail.Jpeg);
                 if (ThumbnailBytes + (long)bitmap.PixelWidth * bitmap.PixelHeight * 4 > _cachePolicy.ThumbnailBytes) break;
                 long actual = checked((long)((decimal)thumbnail.Pts * thumbnail.TimeBaseNumerator * TimeSpan.TicksPerSecond / thumbnail.TimeBaseDenominator - (decimal)origin * TimeSpan.TicksPerSecond));
                 VisibleThumbnails.Add(new(bitmap, Vidsc.Core.Time.TimeText.Format(actual)));
@@ -70,5 +67,19 @@ public sealed partial class MainViewModel
         catch (OperationCanceledException) { if (sourceToken == _openToken) StatusLine = "Obsolete thumbnail work cancelled."; }
         catch (Exception error) { if (sourceToken == _openToken) StatusLine = "Thumbnail preview failed: " + error.Message; }
         finally { _indexCancellation = null; EndMediaJob(); CancelIndexCommand.RaiseCanExecuteChanged(); }
+    }
+
+    internal static BitmapImage DecodeThumbnail(byte[] jpeg)
+    {
+        // The worker validates the encoded dimensions within 144x80. Decode at that size
+        // so portrait and other aspect ratios remain intact without increasing the budget.
+        using var stream = new MemoryStream(jpeg);
+        var bitmap = new BitmapImage();
+        bitmap.BeginInit();
+        bitmap.CacheOption = BitmapCacheOption.OnLoad;
+        bitmap.StreamSource = stream;
+        bitmap.EndInit();
+        bitmap.Freeze();
+        return bitmap;
     }
 }

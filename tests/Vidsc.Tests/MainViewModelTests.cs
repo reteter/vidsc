@@ -19,6 +19,177 @@ namespace Vidsc.Tests;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public async Task SaturatedTransportKeepsLatestSurfaceAndPlaybackRecoveryIntents()
+    {
+        AppPaths paths = NewPaths();
+        using var release = new ManualResetEventSlim();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new FakePlaybackEngine { StepAction = () => { started.TrySetResult(); release.Wait(); } };
+        var vm = new MainViewModel(engine, ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher);
+        var surfaces = new List<bool>();
+        int recoveries = 0;
+        bool playing = true, resumeAfterRestore = false, freshPlaybackLoop = false;
+        void ApplySurface(bool available)
+        {
+            surfaces.Add(available);
+            if (!available) { resumeAfterRestore |= playing; playing = false; }
+            else if (resumeAfterRestore) { resumeAfterRestore = false; playing = true; freshPlaybackLoop = true; }
+        }
+        try
+        {
+            vm.StepForward();
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            for (int i = 1; i < MainViewModel.MaximumTransportCommands; i++) vm.StepForward();
+            for (int i = 0; i < 500; i++)
+            {
+                bool available = i % 2 != 0;
+                Action transition = () => ApplySurface(available);
+                vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.Surface, "surface", transition, available ? null : transition);
+                vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.PlaybackRecovery, "recovery", () => recoveries++);
+            }
+            Assert.Equal(MainViewModel.MaximumTransportCommands, vm.PendingTransportCommands);
+            Assert.Equal(2, vm.PendingLifecycleTransportKinds);
+            release.Set();
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(new[] { false, true }, surfaces);
+            Assert.True(playing);
+            Assert.True(freshPlaybackLoop);
+            Assert.Equal(1, recoveries);
+            Assert.Equal(0, vm.PendingLifecycleTransportKinds);
+        }
+        finally { release.Set(); await vm.ShutdownAsync(); }
+    }
+
+    [Fact]
+    public async Task LifecycleDrainKeepsRestoreArrivingWhileMinimizeIsRunning()
+    {
+        AppPaths paths = NewPaths();
+        using var release = new ManualResetEventSlim();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var vm = new MainViewModel(new FakePlaybackEngine(), ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher);
+        var surfaces = new List<bool>();
+        try
+        {
+            vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.Surface, "minimize", () =>
+            {
+                surfaces.Add(false);
+                started.TrySetResult();
+                release.Wait();
+            });
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            for (int i = 0; i < MainViewModel.MaximumTransportCommands; i++) vm.StepForward();
+            vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.Surface, "restore", () => surfaces.Add(true));
+            release.Set();
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(new[] { false, true }, surfaces);
+            Assert.Equal(0, vm.PendingLifecycleTransportKinds);
+        }
+        finally { release.Set(); await vm.ShutdownAsync(); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LifecycleRestoreIsInvalidatedWhileItsRetainedBarrierIsRunning(bool shutdown)
+    {
+        AppPaths paths = NewPaths();
+        using var releaseStep = new ManualResetEventSlim();
+        using var releaseBarrier = new ManualResetEventSlim();
+        var stepStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var barrierStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new FakePlaybackEngine { StepAction = () => { stepStarted.TrySetResult(); releaseStep.Wait(); } };
+        var vm = new MainViewModel(engine, ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher);
+        int restores = 0;
+        try
+        {
+            vm.StepForward();
+            await stepStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Action minimize = () => { barrierStarted.TrySetResult(); releaseBarrier.Wait(); };
+            vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.Surface, "minimize", minimize, minimize);
+            vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.Surface, "restore", () => restores++);
+            releaseStep.Set();
+            await barrierStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Task closing = shutdown ? vm.ShutdownAsync() : Task.CompletedTask;
+            if (!shutdown) engine.Positions.BeginSource();
+            releaseBarrier.Set();
+            await closing.WaitAsync(TimeSpan.FromSeconds(5));
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, restores);
+        }
+        finally { releaseStep.Set(); releaseBarrier.Set(); await vm.ShutdownAsync(); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task QueuedLifecycleIntentsAreInvalidatedBySourceChangeOrShutdown(bool shutdown)
+    {
+        AppPaths paths = NewPaths();
+        using var release = new ManualResetEventSlim();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new FakePlaybackEngine { StepAction = () => { started.TrySetResult(); release.Wait(); } };
+        var vm = new MainViewModel(engine, ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher,
+            (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)));
+        int calls = 0;
+        try
+        {
+            await vm.OpenAsync(Path.Combine(paths.WorkDirectory, "first.mp4"));
+            vm.StepForward();
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.Surface, "surface", () => calls++);
+            vm.EnqueueLifecycleTransport(MainViewModel.LifecycleTransportKind.PlaybackRecovery, "recovery", () => calls++);
+            Task closing = shutdown ? vm.ShutdownAsync() : vm.OpenAsync(Path.Combine(paths.WorkDirectory, "second.mp4"));
+            release.Set();
+            await closing.WaitAsync(TimeSpan.FromSeconds(5));
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, calls);
+            Assert.Equal(0, vm.PendingLifecycleTransportKinds);
+        }
+        finally { release.Set(); await vm.ShutdownAsync(); }
+    }
+
+    [Theory]
+    [InlineData("scrub")]
+    [InlineData("release")]
+    [InlineData("entry")]
+    public async Task RejectedUiSeekPreservesRetryFeedbackAndCanBeRetried(string flow)
+    {
+        AppPaths paths = NewPaths();
+        using var release = new ManualResetEventSlim();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new FakePlaybackEngine { StepAction = () => { started.TrySetResult(); release.Wait(); } };
+        var vm = new MainViewModel(engine, ToolsetWithoutCli(paths), paths, Dispatcher.CurrentDispatcher,
+            (path, _) => Task.FromResult<SourceMediaInfo?>(MakeInfo(path)));
+        void Seek()
+        {
+            if (flow == "scrub") vm.ScrubTo(TimeSpan.TicksPerSecond);
+            else if (flow == "release") vm.EndScrub(TimeSpan.TicksPerSecond);
+            else { vm.DesiredTimeText = "00:00:01.000"; vm.CommitDesiredExact(); }
+        }
+        try
+        {
+            await vm.OpenAsync(Path.Combine(paths.WorkDirectory, "fixture.mp4"));
+            vm.StepForward();
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            for (int i = 1; i < MainViewModel.MaximumTransportCommands; i++) vm.StepForward();
+            Seek();
+            Assert.Contains("Transport queue is full", vm.StatusLine);
+            Assert.Contains("seek again", vm.StatusLine);
+            Assert.DoesNotContain("issued", vm.StatusLine);
+            Assert.DoesNotContain(vm.LogLines, line => line.Contains("SEEK exact", StringComparison.Ordinal));
+            Assert.Equal(0, vm.ApproximateSeekCount);
+            release.Set();
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(0, engine.ExactSeekCount + engine.ApproximateSeekCount);
+            Seek();
+            Assert.Contains("issued", vm.StatusLine);
+            await vm.WaitForTransportIdleAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1, engine.ExactSeekCount + engine.ApproximateSeekCount);
+        }
+        finally { release.Set(); await vm.ShutdownAsync(); }
+    }
+
+    [Fact]
     public async Task BlockedTransportIsBoundedAndRejectedSeekCanRetryAfterDrain()
     {
         AppPaths paths = NewPaths();
@@ -587,6 +758,7 @@ public sealed class MainViewModelTests
         public List<string> OpenPaths { get; } = new();
         public Action? StepAction { get; init; }
         public int ExactSeekCount { get; private set; }
+        public int ApproximateSeekCount { get; private set; }
 
         public int Volume { get; private set; } = 80;
 
@@ -612,6 +784,7 @@ public sealed class MainViewModelTests
 
         public void SeekApproximate(TimeSpan position)
         {
+            ApproximateSeekCount++;
         }
 
         public void SeekExact(TimeSpan position)
