@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vidsc_inspection_job as inspection
+import vidsc_av1_codec as av1
 
 
 def discover(args):
@@ -20,9 +21,11 @@ def discover(args):
         stream = container.streams[args.stream]
         ctx, tb = stream.codec_context, stream.time_base
         codec, extra = ctx.name, bytes(ctx.extradata or b"")
-        if stream.type != "video" or codec not in ("h264", "hevc") or tb is None:
+        if codec in ("libdav1d", "libaom-av1"):
+            codec = "av1"
+        if stream.type != "video" or codec not in ("h264", "hevc", "av1") or tb is None:
             raise ValueError("Configured AVC/HEVC video is required")
-        inspection.validate_configuration(codec, extra)
+        av1.configuration(extra) if codec == "av1" else inspection.validate_configuration(codec, extra)
         inspection.configure_decoder(ctx)
         ordinal, previous_pts, last_rap = 0, None, None
         for packet in container.demux(stream):
@@ -30,9 +33,9 @@ def discover(args):
             if packet.size:
                 if ordinal >= 10_000_000 or ctx.extradata != extra:
                     raise ValueError("Source traversal/configuration changed")
-                record, _ = inspection.packet_record(packet, ordinal, codec, extra, tb)
+                record, _ = av1.packet_record(packet, ordinal, extra, tb) if codec == "av1" else inspection.packet_record(packet, ordinal, codec, extra, tb)
                 rap = {5} if codec == "h264" else {19, 20, 21}
-                if set(record["nalTypes"]) & rap:
+                if record["shownKeyReset"] if codec == "av1" else set(record["nalTypes"]) & rap:
                     candidate = dict(packet=ordinal, pts=record["pts"], tailPacket=ordinal, endPts=None)
                     last_rap = candidate
                     if record["pts"] * tb < start:
@@ -80,7 +83,7 @@ def discover(args):
         streamIndex=args.stream, codec=codec, timeBase=inspection.rational(tb), resolvedStartPts=resolved_start,
         resolvedEndPts=resolved_end, firstPacket=first["packet"], lastPacket=last["tailPacket"] if codec == "hevc" else last["packet"] - 1,
         startPts=first["pts"], endPts=copied_end(last), draftOnly=True,
-        driverSha256=inspection.sha(Path(__file__).read_bytes()))
+        driverSha256=inspection.sha(Path(__file__).read_bytes()), av1HelperSha256=inspection.sha(Path(av1.__file__).read_bytes()))
 
 
 if __name__ == "__main__":

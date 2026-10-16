@@ -4,10 +4,13 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Vidsc.Media.Inspection;
 using Vidsc.Media.Tooling;
+using Vidsc.Core.Export;
+using Vidsc.Core.Time;
 
 namespace Vidsc.Media.Export;
 
-public sealed record MatroskaCopyOptions(IReadOnlyList<int> SubtitleStreamIndices, bool PreserveIntersectingChapters);
+public sealed record MatroskaCopyOptions(IReadOnlyList<int> SubtitleStreamIndices, bool PreserveIntersectingChapters,
+    IReadOnlyList<AudioCopySelection>? AudioSelections = null);
 
 /// <summary>Native video/SubRip/chapter mapping. No subtitle conversion, audio omission inferred, or sidecar transaction.</summary>
 public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
@@ -51,13 +54,19 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
             string driverHash = Digest(Open(driverPath));
             string copyHash = Digest(Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_copy_job.py")));
             string inspectionHash = Digest(Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_inspection_job.py")));
+            string av1Hash = Digest(Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_av1_codec.py")));
+            string audioHash = Digest(Open(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_matroska_audio.py")));
             string nativeRoot = Path.Combine(Path.GetDirectoryName(pythonPath)!, "Lib", "site-packages", "av.libs");
             var natives = Directory.GetFiles(nativeRoot, "*.dll").ToDictionary(p => Path.GetFileName(p)!, p => Digest(Open(p)));
             Require(natives.Count > 0, "Matroska native runtime is unavailable.");
             FileStream? output = validate ? Open(outputPath) : null;
             string? outputHash = output is null ? null : Digest(output);
             var request = video.Request;
-            List<string> arguments = [driverPath, "--phase", validate ? "validate" : "write", "--input", Path.GetFullPath(sourcePath),
+            var audio = options.AudioSelections ?? [];
+            Require(audio.Count <= 16 && audio.All(a => a.CodecName == "eac3" && a.StreamIndex >= 0
+                && a.StreamIndex != video.Request.Source.StreamIndex && !options.SubtitleStreamIndices.Contains(a.StreamIndex))
+                && audio.Select(a => a.StreamIndex).Distinct().Count() == audio.Count, "Only qualified E-AC-3 audio can be copied to Matroska.");
+            List<string> arguments = ["-B", driverPath, "--phase", validate ? "validate" : "write", "--input", Path.GetFullPath(sourcePath),
                 "--output-media", Path.GetFullPath(outputPath), "--manifest-id", video.ManifestID, "--job-id", jobId.ToString("D"),
                 "--source-id", request.Source.SourceId, "--codec", request.CodecName,
                 "--chapters", options.PreserveIntersectingChapters ? "intersections" : "drop"];
@@ -65,6 +74,7 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
                 ("first-packet", request.FirstPacket), ("last-packet", request.LastPacket), ("start-pts", request.StartPts), ("end-pts", request.EndPts) })
                 arguments.AddRange(["--" + name, value.ToString(CultureInfo.InvariantCulture)]);
             foreach (int index in options.SubtitleStreamIndices) arguments.AddRange(["--subtitle-stream", index.ToString(CultureInfo.InvariantCulture)]);
+            foreach (var track in audio) arguments.AddRange(["--audio-stream", track.StreamIndex.ToString(CultureInfo.InvariantCulture)]);
             if (request.SourceWindow) arguments.Add("--source-window");
             if (request.TerminalEnd is not null) arguments.AddRange(["--terminal-end-pts", request.EndPts.ToString(CultureInfo.InvariantCulture)]);
             var run = await ToolProcessRunner.RunAsync(pythonPath, arguments, TimeSpan.FromSeconds(40), cancellationToken, identity =>
@@ -89,6 +99,10 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
                 && root.GetProperty("driverSha256").GetString()?.ToUpperInvariant() == driverHash
                 && root.GetProperty("mappingValidated").GetBoolean(), "Stale or invalid Matroska mapping report.");
             var mapping = root.GetProperty("mapping");
+            Require(root.GetProperty("av1HelperSha256").GetString()?.ToUpperInvariant() == av1Hash
+                && root.GetProperty("audioHelperSha256").GetString()?.ToUpperInvariant() == audioHash
+                && mapping.GetProperty("audio").EnumerateArray().Select(t => t.GetProperty("sourceStreamIndex").GetInt32())
+                    .SequenceEqual(audio.Select(a => a.StreamIndex)), "Matroska audio mapping/helper differs.");
             var subtitles = mapping.GetProperty("subtitles").EnumerateArray().ToArray();
             Require(subtitles.Select(s => s.GetProperty("sourceStreamIndex").GetInt32()).SequenceEqual(options.SubtitleStreamIndices), "Subtitle mapping differs.");
             Require(options.PreserveIntersectingChapters || mapping.GetProperty("chapters").GetArrayLength() == 0, "Unexpected chapters.");
@@ -97,12 +111,23 @@ public sealed class MatroskaCopyVerifier(string pythonPath, string driverPath)
             Require(await SourceContentHash.ComputeAsync(source, cancellationToken).ConfigureAwait(false) == video.SourceSHA256, "Protected source changed.");
             var nested = root.GetProperty("videoReport");
             var report = FiniteCopyVerifier.ParseReport(nested.GetRawText(), request, jobId, video.SourceSHA256,
-                copyHash, inspectionHash, actualHash);
+                copyHash, inspectionHash, actualHash, av1Hash);
             Require(report.ManifestID == video.ManifestID && report.BuildIdentity == video.BuildIdentity, "Matroska finite capability changed.");
             var observedNatives = nested.GetProperty("build").GetProperty("nativeDllSha256");
             Require(observedNatives.EnumerateObject().Count() == natives.Count && natives.All(n => observedNatives.GetProperty(n.Key!).GetString()?.ToUpperInvariant() == n.Value),
                 "Matroska native runtime changed.");
-            return report.Output ?? throw new InvalidOperationException("Matroska output validation is missing.");
+            var result = report.Output ?? throw new InvalidOperationException("Matroska output validation is missing.");
+            Rational Read(JsonElement value) => Rational.Create(value.GetProperty("numerator").GetInt64(), value.GetProperty("denominator").GetInt64());
+            Rational start = Rational.FromInt64(request.StartPts) * request.Source.TimeBase;
+            Rational end = Rational.FromInt64(request.EndPts) * request.Source.TimeBase;
+            var timings = mapping.GetProperty("audio").EnumerateArray().Select(track =>
+            {
+                Rational first = Read(track.GetProperty("start")), last = Read(track.GetProperty("end"));
+                return new QualifiedAudioTiming(track.GetProperty("sourceStreamIndex").GetInt32(), "eac3",
+                    new(start, end), new(first, last), new(Rational.FromInt64(0), end - start), new(first - start, last - start),
+                    Read(track.GetProperty("leadingExtension")), Read(track.GetProperty("trailingExtension")));
+            }).ToArray();
+            return result with { AudioTimings = timings };
         }
         catch (OperationCanceledException exception) when (!requestedCancellation.IsCancellationRequested && deadline.IsCancellationRequested)
         {

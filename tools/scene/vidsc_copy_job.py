@@ -125,6 +125,9 @@ def reread_source_window(path, args, codec, extra, tb, budget):
 
 
 def qualify(args, result, matroska_subtitles=None):
+    if args.codec == "av1":
+        import vidsc_av1_codec
+        return vidsc_av1_codec.qualify(args, result, matroska_subtitles)
     import av
     budget = inspection.Budget()
     require(str(uuid.UUID(args.job_id)) == args.job_id.lower(), "InvalidJobIdentity")
@@ -241,7 +244,7 @@ def parser():
         command.add_argument("--" + flag, required=True)
     for flag in ("generation", "stream", "first-packet", "last-packet", "start-pts", "end-pts"):
         command.add_argument("--" + flag, type=int, required=True)
-    command.add_argument("--codec", choices=("h264", "hevc"), required=True)
+    command.add_argument("--codec", choices=("h264", "hevc", "av1"), required=True)
     command.add_argument("--output-media")
     command.add_argument("--source-window", action="store_true")
     command.add_argument("--terminal-end-pts", type=int)
@@ -263,7 +266,11 @@ def execute(args, matroska_subtitles=None):
     except Exception as exc:
         result["success"] = False
         result["outputValidated"] = False
-        result["error"] = str(exc) if isinstance(exc, Rejected) else type(exc).__name__
+        expected = isinstance(exc, Rejected)
+        if args.codec == "av1":
+            import vidsc_av1_codec
+            expected = expected or isinstance(exc, vidsc_av1_codec.Rejected)
+        result["error"] = str(exc) if expected else type(exc).__name__
     return result
 
 

@@ -187,8 +187,10 @@ public sealed partial class MainViewModel
             if (subtitles.Any(index => _mediaInfo!.Streams.Single(t => t.Index == index).CodecName != "subrip")) throw new InvalidOperationException("Only native SubRip subtitle copy is qualified.");
             if (selectedContainer == CopyContainer.Mp4 && subtitles.Length > 0)
                 throw new InvalidOperationException("Choose Matroska for SubRip/chapters, or explicitly deselect them. No conversion is performed.");
-            if (selectedContainer == CopyContainer.Matroska && audio.Length > 0)
-                throw new InvalidOperationException("Selected Matroska audio still requires qualified CodecDelay/preroll timing. Use the qualified MP4 audio route or explicitly select video/SubRip only.");
+            if (selectedContainer == CopyContainer.Matroska && audio.Any(a => a.CodecName != "eac3"))
+                throw new InvalidOperationException("Matroska audio copy currently qualifies ordinary 48-kHz stereo/5.1 E-AC-3. Deselect other audio tracks or choose a supported container; no conversion is performed.");
+            if (selectedContainer != CopyContainer.Matroska && video.CodecName == "av1")
+                throw new InvalidOperationException("Choose Matroska output for AV1 stream copy.");
             CopyExportSummary = "Resolving numeric input to observed presentation boundaries…";
             var identity = new ProgressiveSourceIdentity(snapshot.Identity, snapshot.Generation, snapshot.Stream, snapshot.TimeBase, snapshot.Origin);
             var cancellation = _mediaJobCancellation!;
@@ -197,7 +199,7 @@ public sealed partial class MainViewModel
             if (!SnapshotCurrent(snapshot)) throw new OperationCanceledException("Source changed while discovering export boundaries.");
             delegated = true;
             return await ExportCopyCoreAsync(found.Candidate, found.Requested, selectedPolicy, audio, destination,
-                selectedContainer == CopyContainer.Matroska ? new(subtitles, preserveChapters) : null);
+                selectedContainer == CopyContainer.Matroska ? new(subtitles, preserveChapters, audio) : null);
         }
         catch (NavigationProcessStuckException error) { RetainMediaJob(error); CopyExportSummary = error.Message; }
         catch (Exception error) { CopyExportSummary = error is OperationCanceledException ? "Stream-copy export cancelled." : error.Message; }
@@ -301,7 +303,7 @@ public sealed partial class MainViewModel
                 throw new InvalidOperationException("The verified finite range does not satisfy the selected boundary policy.");
             CopyExportSummary = $"{policy}: {proposal!.ResolvedInterval.Start.AsSeconds()}–{proposal.ResolvedInterval.End.AsSeconds()} s. "
                 + $"Requested boundary deltas: {proposal.TotalStartDeltaSeconds}/{proposal.TotalEndDeltaSeconds} s. Qualifying selected audio…";
-            QualifiedAudioCopyRange? audio = selectedAudio.Count == 0 ? null
+            QualifiedAudioCopyRange? audio = selectedAudio.Count == 0 || matroska is not null ? null
                 : await Task.Run(() => audioVerifier!.QualifyAsync(source, video, selectedAudio, Guid.NewGuid(),
                     cancellation.Token, ObserveMediaProcess), cancellation.Token);
             var exporter = new VerifiedCopyExporter(finite!, _ffmpeg!, audioVerifier, matroskaVerifier);
@@ -320,7 +322,9 @@ public sealed partial class MainViewModel
             if (!result.ExitConfirmed) { _mediaJobStuck = true; _retainedMediaJobId = result.JobId; RaiseCommandStates(); }
             CopyOutputPath = result.Success ? result.Destination : null;
             CopyExportSummary = result.Success
-                ? $"Stream-copy output validated by full scan. Presentation end: {result.PresentationEnd?.AsSeconds()} s. {result.AudioTimings?.Count ?? 0} copied audio track(s)."
+                ? $"Stream-copy output validated by full scan. Presentation end: {result.PresentationEnd?.AsSeconds()} s. {result.AudioTimings?.Count ?? 0} copied audio track(s). "
+                    + string.Join(" ", (result.AudioTimings ?? []).Select(t => $"Audio {t.StreamIndex}: packet copy; leading/trailing extensions {t.LeadingExtension}/{t.TrailingExtension} s; not sample-exact."))
+                    + (result.MatroskaTerminalReconciled ? " MKV terminal end is bound to the video-track duration; raw decoder duration differs by at most one mux tick (up to 1 ms). Exact last-frame hold is player-dependent." : "")
                 : result.Error ?? "Stream-copy export failed.";
             return result;
         }

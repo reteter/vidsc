@@ -7,6 +7,18 @@ This ledger records verified increments and evidence, not a parallel task backlo
 dependencies and remaining tasks; see [the workflow](github-workflow.md). The acceptance gates in
 [the implementation plan](implementation-plan.md) still define milestone completion.
 
+## AV1/MKV stream-copy integration — 16 October 2026
+
+The #67 increment adds finite AV1/MKV and qualified E-AC-3 copying through the
+existing editor/export pipeline. Final packaged numeric discovery and export pass:
+250 video presentations/payloads and 359 audio packets retain source identity,
+intended-window native PCM and common timing. Real expanded-range checks exposed
+and corrected bounded audio context and explicitly disclosed MKV terminal-grid
+handling. Canonical CI passes 442 tests and rollback; package/native gates pass
+without GUI smoke. [The evidence record](validation/2026-10-16-av1-mkv-copy.md)
+states the finite limits and the EOF/streaming follow-up in #68. This does not
+establish universal AV1 support, exact AV1 smart rendering or full M5b acceptance.
+
 ## M5a bounded editor acceptance — 16 October 2026
 
 The explicitly authorized packaged editor trial passes confirmed In/Out, two named intervals,

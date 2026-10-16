@@ -31,6 +31,9 @@ public sealed class CopyRangeDiscovery(string pythonPath, string driverPath)
         {
             owner.Protect(driverPath);
             owner.Protect(Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_inspection_job.py"));
+            string av1Helper = Path.Combine(Path.GetDirectoryName(driverPath)!, "vidsc_av1_codec.py");
+            owner.Protect(av1Helper);
+            string av1Hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(av1Helper)));
             string nativeRoot = Path.Combine(Path.GetDirectoryName(pythonPath)!, "Lib", "site-packages", "av.libs");
             foreach (string library in Directory.GetFiles(nativeRoot, "*.dll")) owner.Protect(library);
             if (InspectionSourceIdentity.Capture(sourcePath).IdentityKey != source.SourceId) throw new IOException("Source metadata is stale.");
@@ -38,7 +41,7 @@ public sealed class CopyRangeDiscovery(string pythonPath, string driverPath)
             Rational origin = RationalTime.FromTicks(source.TimelineOriginTicks).AsSeconds();
             Rational start = requestedUiStart.AsSeconds() + origin, end = requestedUiEnd.AsSeconds() + origin;
             Guid job = Guid.NewGuid();
-            string[] arguments = [driverPath, "--input", Path.GetFullPath(sourcePath), "--job-id", job.ToString("D"),
+            string[] arguments = ["-B", driverPath, "--input", Path.GetFullPath(sourcePath), "--job-id", job.ToString("D"),
                 "--source-id", source.SourceId, "--generation", source.Generation.ToString(CultureInfo.InvariantCulture),
                 "--stream", source.StreamIndex.ToString(CultureInfo.InvariantCulture), "--start=" + Fraction(start), "--end=" + Fraction(end),
                 "--policy", policy.ToString().ToLowerInvariant()];
@@ -55,6 +58,8 @@ public sealed class CopyRangeDiscovery(string pythonPath, string driverPath)
                 || root.GetProperty("generation").GetInt64() != source.Generation || root.GetProperty("streamIndex").GetInt32() != source.StreamIndex
                 || root.GetProperty("driverSha256").GetString()?.ToUpperInvariant() != driverHash || !root.GetProperty("draftOnly").GetBoolean())
                 throw new InvalidDataException("Stale copy discovery report.");
+            if (root.GetProperty("av1HelperSha256").GetString()?.ToUpperInvariant() != av1Hash)
+                throw new InvalidDataException("Copy discovery AV1 helper differs.");
             var timeBase = root.GetProperty("timeBase");
             var tb = Rational.Create(timeBase.GetProperty("numerator").GetInt64(), timeBase.GetProperty("denominator").GetInt64());
             if (tb != source.TimeBase) throw new InvalidDataException("Discovery time base differs from source metadata.");
