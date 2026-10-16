@@ -15,6 +15,23 @@ public sealed class WorkerAdmissionTests
         new("source", 1, 0, Rational.Create(1, 12288), 0), "h264");
 
     [Fact]
+    public async Task WaveformAndThumbnailShareAdmissionAndCancelBeforeSourceIo()
+    {
+        using var owner = await CopyJobAdmission.EnterAsync(Guid.NewGuid(), default);
+        using var cancellation = new CancellationTokenSource();
+        var tools = new MediaToolset("unused", "unused", "unused", "unused", null, null, "missing-python", null, []);
+        var source = new InspectionSourceIdentity("\0invalid", 1, 0, "source");
+        bool started = false;
+        var waveform = WaveformWorker.ReadAsync(tools, source, 1, 0, 1, 0, 1, 1024, "unused", cancellation.Token, _ => started = true);
+        var thumbnails = VisibleThumbnailWorker.ReadBatchAsync(tools, source, 0, 0, 1, [0], "unused", cancellation.Token, _ => started = true);
+        Assert.False(waveform.IsCompleted); Assert.False(thumbnails.IsCompleted);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waveform);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => thumbnails);
+        Assert.False(started);
+    }
+
+    [Fact]
     public async Task SceneAndEvidenceWaitBeforeSourceIoAndCancelWithoutStarting()
     {
         using var owner = await CopyJobAdmission.EnterAsync(Guid.NewGuid(), default);

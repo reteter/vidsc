@@ -45,7 +45,7 @@
         </ComboBox>
 
         <Button Content="Packaged CLI check" Width="150" Margin="14,0,6,0" Command="{Binding ToolCheckCommand}" />
-        <Button Content="Scene check" Width="110" Command="{Binding SceneCheckCommand}" />
+        <Button Content="Analyze scenes" Width="110" Command="{Binding SceneCheckCommand}" />
       </WrapPanel>
     </Border>
 
@@ -137,6 +137,30 @@
       <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#222C36" />
 
       <TabControl Grid.Column="2" Background="#141A20" BorderBrush="#222C36">
+        <TabControl.ItemContainerStyle>
+          <Style TargetType="TabItem" BasedOn="{StaticResource {x:Type TabItem}}">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+          </Style>
+        </TabControl.ItemContainerStyle>
+        <TabItem Header="Analysis">
+          <ScrollViewer Padding="8" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel>
+            <TextBlock Text="Analysis interval (UI start / duration, seconds)" />
+            <StackPanel Orientation="Horizontal" Margin="0,4"><TextBox Width="100" Text="{Binding AnalysisStart, UpdateSourceTrigger=PropertyChanged}" /><TextBox Width="100" Margin="6,0" Text="{Binding AnalysisDuration, UpdateSourceTrigger=PropertyChanged}" /><Button Content="Visible window" Command="{Binding UseVisibleAnalysisWindowCommand}" /></StackPanel>
+            <TextBlock Text="Scene detector" />
+            <ComboBox ItemsSource="{Binding SceneDetectors}" SelectedItem="{Binding SceneDetector}" Margin="0,4" />
+            <TextBlock Text="Threshold / minimum scene length (decoded frames)" />
+            <StackPanel Orientation="Horizontal" Margin="0,4"><TextBox Width="100" Text="{Binding AnalysisThreshold, UpdateSourceTrigger=PropertyChanged}" /><TextBox Width="100" Margin="6,0" Text="{Binding AnalysisMinScene, UpdateSourceTrigger=PropertyChanged}" /></StackPanel>
+            <WrapPanel Margin="0,6"><Button Content="Analyze scenes" Command="{Binding SceneCheckCommand}" /><Button Content="Load waveform" Command="{Binding LoadWaveformCommand}" Margin="4,0" /><Button Content="Cancel analysis" Command="{Binding CancelIndexCommand}" /></WrapPanel>
+            <TextBlock Text="Scene proposals (source PTS; independent of access points)" TextWrapping="Wrap" />
+            <ListBox ItemsSource="{Binding SceneProposals}" SelectedItem="{Binding SelectedSceneProposal}" Height="180" Margin="0,4"><ListBox.ItemTemplate><DataTemplate><StackPanel><TextBlock><Run Text="Scene " /><Run Text="{Binding Index, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding StartSeconds, Mode=OneWay, StringFormat={}{0:0.###}}" /><Run Text="–" /><Run Text="{Binding EndSeconds, Mode=OneWay, StringFormat={}{0:0.###}}" /><Run Text=" s" /></TextBlock><TextBlock Text="{Binding EndIsPresentationBoundary, StringFormat=Observed next-scene boundary: {0}}" Foreground="#9FB3C8" /></StackPanel></DataTemplate></ListBox.ItemTemplate></ListBox>
+            <Button Content="Convert selected proposal to edit interval" Command="{Binding ConvertSceneCommand}" Margin="0,4" />
+            <TextBlock Text="Conversion requires an independent frame index. The last observed PTS never supplies a guessed presentation end." TextWrapping="Wrap" Foreground="#9FB3C8" />
+            <local:WaveformControl Waveform="{Binding Waveform}" Height="90" Margin="0,10,0,4" ToolTip="Native-channel min/max envelope; gray/absent bins have unknown coverage. No audio downmix." />
+            <TextBlock Text="{Binding WaveformSummary}" TextWrapping="Wrap" Foreground="#9FB3C8" />
+            <TextBlock Text="{Binding AnalysisSummary}" TextWrapping="Wrap" Margin="0,6" />
+          </StackPanel></ScrollViewer>
+        </TabItem>
         <TabItem Header="Segments" IsSelected="True">
           <ScrollViewer Padding="8"><StackPanel>
             <TextBlock Text="{Binding SourceSummary}" TextWrapping="Wrap" />

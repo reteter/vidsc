@@ -436,6 +436,8 @@ New-Item -ItemType Directory -Force -Path $sceneStage | Out-Null
 $sceneDriverSource = Join-Path $PSScriptRoot 'scene/vidsc_scene_job.py'
 Copy-Item -LiteralPath $sceneDriverSource -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_inspection_job.py') -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_waveform_job.py') -Destination $sceneStage -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_thumbnail_job.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_copy_job.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_av1_codec.py') -Destination $sceneStage -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scene/vidsc_nal_streaming.py') -Destination $sceneStage -Force

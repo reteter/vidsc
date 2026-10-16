@@ -174,6 +174,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         CancelIndexCommand = new RelayCommand(() => _indexCancellation?.Cancel(), () => _indexCancellation is not null);
         InitializeCopyExportCommands();
         InitializeEditor();
+        InitializeAnalysis();
         RefreshToolsetText();
         RefreshManifestText();
         RefreshDiagnostics();
@@ -594,6 +595,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         long token = ++_openToken;
         ++_thumbnailVersion;
         VisibleThumbnails.Clear();
+        ClearAnalysis();
         CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         CancellationTokenSource? previous = Interlocked.Exchange(ref _openCancellation, cancellation);
         previous?.Cancel();
@@ -1263,6 +1265,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task CloseSourceAsync()
     {
         ++_openToken;
+        ++_thumbnailVersion;
+        VisibleThumbnails.Clear();
+        ClearAnalysis();
         _openCancellation?.Cancel();
         IsBusy = true;
         try
@@ -1452,59 +1457,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task RunSceneCheckAsync()
-    {
-        if (!TryBeginSceneJob())
-            return;
-
-        try
-        {
-            _indexCancellation = _mediaJobCancellation;
-            CancelIndexCommand.RaiseCanExecuteChanged();
-            SceneJobRequest request = CreateSceneRequest();
-            SceneJobResult result = await (_sceneOverride is not null
-                ? _sceneOverride(request, _mediaJobCancellation!.Token)
-                : _sceneWorker!
-                .RunAsync(_sourcePath!, 0, 3, "content", _mediaJobCancellation!.Token, processStarted: ObserveMediaProcess,
-                    request: request))
-                .ConfigureAwait(true);
-
-            if (result.Process is { } process) ConfirmMediaProcess(process);
-            _mediaJobCancellation!.Token.ThrowIfCancellationRequested();
-            if (result.Success) _sceneTicks = result.Scenes.Where(s => s.StartPts.HasValue && s.TimeBaseNumerator.HasValue && s.TimeBaseDenominator.HasValue)
-                .Select(s => checked(new RationalTime(s.StartPts!.Value, Rational.Create(s.TimeBaseNumerator!.Value, s.TimeBaseDenominator!.Value)).ToTicks() - (_mediaInfo?.ContainerStartTicks ?? 0)))
-                .Where(t => t >= 0).Distinct().Order().ToArray();
-            AppendLog("SCENE " + result.Describe());
-
-            foreach (SceneProposal scene in result.Scenes.Take(10))
-            {
-                AppendLog(
-                    $"SCENE #{scene.Index} frames {scene.StartFrame}..{scene.EndFrame} "
-                    + $"~{scene.StartSeconds:0.###}s..{scene.EndSeconds:0.###}s");
-            }
-
-            StatusLine = result.Success
-                ? $"Scene job ok: {result.Scenes.Count} proposal(s); positions use decoded source PTS. Final presentation end remains unverified."
-                : "Scene job failed: " + (result.Error ?? "unknown");
-        }
-        catch (OperationCanceledException)
-        {
-            StatusLine = "Scene analysis cancelled.";
-            AppendLog("SCENE analysis cancelled.");
-        }
-        catch (Exception exception)
-        {
-            LastError = exception.Message;
-            StatusLine = "Scene job threw: " + exception.Message;
-            AppendLog("SCENE EXCEPTION " + exception);
-        }
-        finally
-        {
-            _indexCancellation = null;
-            EndMediaJob();
-            CancelIndexCommand.RaiseCanExecuteChanged();
-        }
-    }
+    private Task RunSceneCheckAsync() => AnalyzeScenesAsync();
 
     private SceneJobRequest CreateSceneRequest() => new(Guid.NewGuid().ToString("N"),
         _sceneOverride is null ? _metadataIdentity?.IdentityKey ?? throw new InvalidOperationException("Reopen source metadata before analysis.") : _sourcePath!, _openToken,
@@ -1577,6 +1530,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         StartCopyExportCommand?.RaiseCanExecuteChanged();
         PreviewCopyCommand?.RaiseCanExecuteChanged();
         LoadThumbnailsCommand?.RaiseCanExecuteChanged();
+        LoadWaveformCommand?.RaiseCanExecuteChanged();
+        ConvertSceneCommand?.RaiseCanExecuteChanged();
         OpenCopyOutputCommand?.RaiseCanExecuteChanged();
         ReconcileCopyWorkerCommand?.RaiseCanExecuteChanged();
         CancelCopyExportCommand?.RaiseCanExecuteChanged();
