@@ -1,14 +1,13 @@
 {
   "schemaVersion": 1,
   "project": "vidsc",
-  "milestone": "M0 scaffold / runtime bundle",
+  "milestone": "M8 Release bundle",
   "authoredUtc": "2026-10-14T00:00:00Z",
   "notes": [
-    "Pinned dependency and runtime identities for the first implementation increment.",
+    "Pinned runtime identities for the framework-dependent win-x64 expanded bundle.",
     "No redistribution licence clearance is claimed here; see 'distribution'.",
     "This file is the authored pin. tools/Build-Release.ps1 generates runtime-manifest.observed.json next to the published executable with the SHA256 of every bundled file."
   ],
-
   "dotnet": {
     "targetFramework": "net10.0-windows",
     "sdk": "10.0.201",
@@ -16,7 +15,6 @@
     "distribution": "framework-dependent",
     "bundlesDotnetRuntime": false
   },
-
   "playback": {
     "sourceBuild": {
       "kind": "vendored-project-reference",
@@ -34,13 +32,34 @@
       "licenseExpression": "LGPL-3.0-or-later"
     },
     "transitive": [
-      { "id": "Flyleaf.FFmpeg.Bindings", "version": "9.0.2" },
-      { "id": "Vortice.D3DCompiler", "version": "3.8.3" },
-      { "id": "Vortice.Direct3D11", "version": "3.8.3" },
-      { "id": "Vortice.DirectComposition", "version": "3.8.3" },
-      { "id": "Vortice.Mathematics", "version": "2.1.1" },
-      { "id": "Vortice.MediaFoundation", "version": "3.8.3" },
-      { "id": "Vortice.XAudio2", "version": "3.8.3" }
+      {
+        "id": "Flyleaf.FFmpeg.Bindings",
+        "version": "9.0.2"
+      },
+      {
+        "id": "Vortice.D3DCompiler",
+        "version": "3.8.3"
+      },
+      {
+        "id": "Vortice.Direct3D11",
+        "version": "3.8.3"
+      },
+      {
+        "id": "Vortice.DirectComposition",
+        "version": "3.8.3"
+      },
+      {
+        "id": "Vortice.Mathematics",
+        "version": "2.1.1"
+      },
+      {
+        "id": "Vortice.MediaFoundation",
+        "version": "3.8.3"
+      },
+      {
+        "id": "Vortice.XAudio2",
+        "version": "3.8.3"
+      }
     ],
     "native": {
       "component": "FFmpeg v9.0 (patched by Flyleaf, Windows x64, playback-only: no encoders)",
@@ -66,10 +85,20 @@
         "swresample-7.dll",
         "swscale-10.dll"
       ],
-      "why": "FlyleafLib 3.11.11 binds the Flyleaf.FFmpeg.Bindings 9.0.2 / FFmpeg 9 ABI. The libraries must be the ABI set published with the matching Flyleaf release; they must never be replaced by an unrelated FFmpeg build. The separate CLI set is avcodec-62/avformat-62/avutil-60."
+      "why": "FlyleafLib 3.11.11 binds the Flyleaf.FFmpeg.Bindings 9.0.2 / FFmpeg 9 ABI. The libraries must be the ABI set published with the matching Flyleaf release; they must never be replaced by an unrelated FFmpeg build. The separate CLI set is avcodec-62/avformat-62/avutil-60.",
+      "observedSha256": {
+        "avcodec-63.dll": "7d60586963b8847ada9a24d728477741e0d8e82a7a7f9a6fc6be4c5af7d32e3f",
+        "avdevice-63.dll": "827a3a33c793747550614f82d19052d915b933c8a5a1262fd0560497212112b7",
+        "avfilter-12.dll": "160a624bccde65cfd8aa2e1236130cef5b41142d03ff37d1930abfde6b15782a",
+        "avformat-63.dll": "62c1d67e1cb1ec1383c944af8ea16310d248231ce282129c3e85acb9c2287334",
+        "avutil-61.dll": "ac9c0a6b0a88cb8372c9f9c9dcfcea2f063775ccc96b953d1acc1fe1b37450bf",
+        "swresample-7.dll": "62966c9e02e4338c6afa5e6d8a61120d97976261f2450730db2fb6c05471d4f8",
+        "swscale-10.dll": "72caa6bc65d38b1575e77f6d63e70c6d5dcf47d308387ecfb8a592fa5a9a70b3"
+      },
+      "licenseObserved": "GPL version 3 or later",
+      "buildConfigurationObserved": "--enable-gpl --enable-version3; actual native avutil_license/configuration queried; complete source/build provenance remains unresolved"
     }
   },
-
   "cli": {
     "sourceDirectory": "C:\\ffmpeg\\bin",
     "expectedVersionToken": "N-121120-gc74181a04b-20250918",
@@ -100,10 +129,12 @@
     },
     "why": "The CLI set is a separate, differently versioned FFmpeg build. It is bundled next to the application under tools/ffmpeg and is never used as the playback native set."
   },
-
   "scene": {
     "driver": "tools/scene/vidsc_scene_job.py",
-    "analysisHelpers": ["tools/scene/vidsc_waveform_job.py", "tools/scene/vidsc_thumbnail_job.py"],
+    "analysisHelpers": [
+      "tools/scene/vidsc_waveform_job.py",
+      "tools/scene/vidsc_thumbnail_job.py"
+    ],
     "buildScript": "tools/Build-Scene-Runtime.ps1",
     "relocatable": {
       "kind": "official Windows embeddable CPython + project-local pip wheel install (no venv, no pyvenv.cfg)",
@@ -119,15 +150,58 @@
       "pyvenvCfgPresent": false,
       "hostPythonRequired": false,
       "installed": [
-        { "name": "scenedetect", "version": "0.7.2", "wheel": "scenedetect-0.7.2-py3-none-any.whl", "sha256": "953b89fe7e6b82a497c263e26245ad599b004aa7afa74814312980479a040641" },
-        { "name": "av", "version": "19.0.1", "wheel": "av-19.0.1-cp312-abi3-win_amd64.whl", "sha256": "906fc3db09288319a75ea23ffefb59961c7dbe0d1c074601507a89de7d8593d8", "caveat": "cp312-abi3 stable-ABI wheel used on 3.14" },
-        { "name": "numpy", "version": "2.5.4", "wheel": "numpy-2.5.4-cp314-cp314-win_amd64.whl", "sha256": "2ca144f15135b6212a5c47b1e2aeca6e412f102f95a2d5d88d8aec77eb255de3" },
-        { "name": "opencv-python", "version": "5.0.0.93", "wheel": "opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl", "sha256": "f90ba04b8f73bc5c3814037699739f0156f597338a98f05956c684e7c3ca10d2" },
-        { "name": "click", "version": "8.5.0", "wheel": "click-8.5.0-py3-none-any.whl", "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360" },
-        { "name": "colorama", "version": "0.4.6", "wheel": "colorama-0.4.6-py2.py3-none-any.whl", "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6" },
-        { "name": "platformdirs", "version": "4.13.0", "wheel": "platformdirs-4.13.0-py3-none-any.whl", "sha256": "3dbcf4cd708f21cf876c4eaa90e58412bc4f033d87143f41b1493ff77c25b7e1" },
-        { "name": "tqdm", "version": "4.70.1", "wheel": "tqdm-4.70.1-py3-none-any.whl", "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73" }
-      ]
+        {
+          "name": "scenedetect",
+          "version": "0.7.2",
+          "wheel": "scenedetect-0.7.2-py3-none-any.whl",
+          "sha256": "953b89fe7e6b82a497c263e26245ad599b004aa7afa74814312980479a040641"
+        },
+        {
+          "name": "av",
+          "version": "19.0.1",
+          "wheel": "av-19.0.1-cp312-abi3-win_amd64.whl",
+          "sha256": "906fc3db09288319a75ea23ffefb59961c7dbe0d1c074601507a89de7d8593d8",
+          "caveat": "cp312-abi3 stable-ABI wheel used on 3.14"
+        },
+        {
+          "name": "numpy",
+          "version": "2.5.4",
+          "wheel": "numpy-2.5.4-cp314-cp314-win_amd64.whl",
+          "sha256": "2ca144f15135b6212a5c47b1e2aeca6e412f102f95a2d5d88d8aec77eb255de3"
+        },
+        {
+          "name": "opencv-python",
+          "version": "5.0.0.93",
+          "wheel": "opencv_python-5.0.0.93-cp37-abi3-win_amd64.whl",
+          "sha256": "f90ba04b8f73bc5c3814037699739f0156f597338a98f05956c684e7c3ca10d2"
+        },
+        {
+          "name": "click",
+          "version": "8.5.0",
+          "wheel": "click-8.5.0-py3-none-any.whl",
+          "sha256": "255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360"
+        },
+        {
+          "name": "colorama",
+          "version": "0.4.6",
+          "wheel": "colorama-0.4.6-py2.py3-none-any.whl",
+          "sha256": "4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6"
+        },
+        {
+          "name": "platformdirs",
+          "version": "4.13.0",
+          "wheel": "platformdirs-4.13.0-py3-none-any.whl",
+          "sha256": "3dbcf4cd708f21cf876c4eaa90e58412bc4f033d87143f41b1493ff77c25b7e1"
+        },
+        {
+          "name": "tqdm",
+          "version": "4.70.1",
+          "wheel": "tqdm-4.70.1-py3-none-any.whl",
+          "sha256": "c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73"
+        }
+      ],
+      "runtimeTreeSha256": "a54f76f8873a6f81f59061644a01168d55e57f8bd4b755daa8abb787ebfd5ced",
+      "runtimeTreePolicy": "SHA256 of ordinal sorted relative-path:lowercase-file-SHA256 LF records including final LF, excluding interpreter-generated pyc/__pycache__; validated before package import-policy customization. All shipped bytes are separately inventoried."
     },
     "legacyFallback": {
       "kind": "host-Python virtual environment (NOT relocatable)",
@@ -138,24 +212,33 @@
     },
     "why": "Scene detection runs in its own project-local runtime as a child process. The preferred bundle is the relocatable embeddable runtime; no development Python path is substituted when the bundle is missing."
   },
-
   "matroskaCopy": {
     "worker": "scene/vidsc_matroska_copy_job.py",
-    "helpers": ["scene/vidsc_copy_job.py", "scene/vidsc_inspection_job.py", "scene/vidsc_av1_codec.py", "scene/vidsc_matroska_audio.py", "scene/vidsc_nal_streaming.py", "scene/vidsc_audio_streaming.py", "scene/vidsc_audio_copy.py"],
+    "helpers": [
+      "scene/vidsc_copy_job.py",
+      "scene/vidsc_inspection_job.py",
+      "scene/vidsc_av1_codec.py",
+      "scene/vidsc_matroska_audio.py",
+      "scene/vidsc_nal_streaming.py",
+      "scene/vidsc_audio_streaming.py",
+      "scene/vidsc_audio_copy.py"
+    ],
     "qualification": "Streaming AVC/HEVC native packet and presentation identity, including independently drained source EOF; exact 48-kHz 5.1 AAC/AC-3 context proof. Existing AV1 Main 8-bit and independent-program stereo/5.1 E-AC-3 remain separate policies. Streaming limits: 64 GiB output, six hours, ten million packets, 300 seconds wall time, 16 MiB individual packets, 2073600 pixels, two decoder threads."
   },
-
   "accurateCut": {
     "worker": "scene/vidsc_accurate_job.py",
-    "helpers": ["scene/vidsc_accurate_codec.py", "scene/vidsc_accurate_audio.py"],
+    "helpers": [
+      "scene/vidsc_accurate_codec.py",
+      "scene/vidsc_accurate_audio.py"
+    ],
     "runtime": "scene.relocatableRuntime; isolated in-process PyAV encoders; separate CLI terminal reader",
     "qualityPolicy": "accurate-cfr-reference-crf18-slow-v1",
     "limits": "512 source pictures, 64 MiB compressed window, 64 boundary pixel views / 256 MiB, one output view, 1 GiB private process bytes, two codec threads",
     "qualification": "MP4 AVC/x264 or HEVC Main10/x265 CFR only; fail closed for unqualified topology, display/HDR/HRD, MOV and NVIDIA"
   },
-
   "distribution": {
-    "decision": "unresolved",
-    "statement": "This increment is a local-development build. Redistribution licence clearance has NOT been decided or claimed for the Flyleaf native FFmpeg build, the CLI FFmpeg build (compiled with --enable-gpl --enable-version3) or the Python/PyAV runtime."
+    "decision": "private-local-only",
+    "statement": "Not cleared for public binary redistribution. See bundled DISTRIBUTION.md for actual component obligations and missing corresponding-source/build materials.",
+    "redistributionEligible": false
   }
 }

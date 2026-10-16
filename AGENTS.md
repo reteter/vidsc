@@ -67,5 +67,6 @@
 - Architecture, timing/edit/export semantics, resource budgets and milestone gates: docs/implementation-plan.md.
 - Playback hooks, lifecycle and media correctness evidence: relevant records in docs/validation/ and their implementation references.
 - Verification policy: docs/ci.md. Build/delivery entry points: tools/Build-Release.ps1, run.bat and tools/runtime-manifest.json; apply repo-builds when changing delivery workflows.
+- Release remains an expanded framework-dependent win-x64 bundle under artifacts/release/app; run.bat rebuilds before launch. Use tools/Test-Delivery.ps1 -NonGui for the desktop-free package gate. See docs/release-guide.md and docs/distribution.md for prerequisites, usage and the private-local-only distribution decision.
 - GitHub operations, branch isolation and documentation ownership: docs/github-workflow.md.
 - Short continuation prompts: docs/session-start.md.

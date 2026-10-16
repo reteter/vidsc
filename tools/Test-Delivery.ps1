@@ -4,9 +4,11 @@
 param(
     [string]$ReleaseRoot = "$PSScriptRoot/../artifacts/release",
     [string]$Fixture = "$PSScriptRoot/../artifacts/tests/fixtures/scene-smoke.mp4",
-    [string]$RunId = ([Guid]::NewGuid().ToString('N'))
+    [string]$RunId = ([Guid]::NewGuid().ToString('N')),
+    [switch]$NonGui
 )
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot/Release-Package.ps1"
 if ($RunId -notmatch '^[a-zA-Z0-9_-]+$') { throw 'RunId must be a simple directory name.' }
 $root = [IO.Path]::GetFullPath("$PSScriptRoot/../artifacts/delivery/$RunId clean Ünïcode")
 if (Test-Path -LiteralPath $root) { throw "Output already exists: $root" }
@@ -27,6 +29,7 @@ function Invoke-Owned([string]$Executable, [string[]]$Arguments, [string]$Name, 
     $start.Environment['VIDSC_WORK_DIR'] = Join-Path $root 'fresh work state'
     $start.Environment['TEMP'] = Join-Path $root 'fresh temp'
     $start.Environment['TMP'] = $start.Environment['TEMP']
+    $start.Environment['DOTNET_BUNDLE_EXTRACT_BASE_DIR'] = Join-Path $root 'fresh extraction cache'
     $null = New-Item -ItemType Directory -Path $start.Environment['TEMP'] -Force
     $process = $null
     $failure = $null
@@ -81,9 +84,39 @@ function Read-RequiredReport([string]$Path) {
 
 try {
     $release = (Resolve-Path -LiteralPath $ReleaseRoot).Path
-    $fixturePath = (Resolve-Path -LiteralPath $Fixture).Path
+    $null = Test-ReleaseInventory -Root (Join-Path $release 'app')
     Copy-Item -LiteralPath (Join-Path $release 'app') -Destination (Join-Path $root 'app') -Recurse
+    $null = Test-ReleaseInventory -Root (Join-Path $root 'app')
     $media = Join-Path $root 'source media with spaces.mp4'
+    if ($NonGui) {
+        # Build the adapter driver separately; never add test assemblies to the measured package.
+        $dotnet = (Get-Command dotnet -CommandType Application -ErrorAction Stop).Source
+        $runnerRoot = Join-Path $root 'adapter driver'
+        New-Item -ItemType Directory -Path $runnerRoot | Out-Null
+        $references = Get-ChildItem -LiteralPath (Join-Path $root 'app') -Filter '*.dll' -File | ForEach-Object {
+            $name = [Security.SecurityElement]::Escape($_.BaseName)
+            $path = [Security.SecurityElement]::Escape($_.FullName)
+            "<Reference Include=`"$name`"><HintPath>$path</HintPath></Reference>"
+        }
+        $source = [Security.SecurityElement]::Escape((Join-Path $PSScriptRoot 'verification/M8Delivery.cs'))
+        @"
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><PlatformTarget>x64</PlatformTarget><UseAppHost>false</UseAppHost><UseSharedCompilation>false</UseSharedCompilation></PropertyGroup><ItemGroup>$references<Compile Include="$source"/></ItemGroup></Project>
+"@ | Set-Content -LiteralPath (Join-Path $runnerRoot 'M8Delivery.csproj') -Encoding utf8
+        & $dotnet build (Join-Path $runnerRoot 'M8Delivery.csproj') -c Release -o (Join-Path $runnerRoot 'bin') *> (Join-Path $root 'adapter-build.log')
+        if ($LASTEXITCODE -ne 0) { throw 'Delivery adapter driver compilation failed.' }
+        # Resolution from the driver directory is explicit; package bytes remain untouched.
+        Get-ChildItem -LiteralPath (Join-Path $root 'app') -Filter '*.dll' -File | Copy-Item -Destination (Join-Path $runnerRoot 'bin')
+        $ffmpeg = Join-Path $root 'app/tools/ffmpeg/ffmpeg.exe'
+        if ((Invoke-Owned $ffmpeg @('-hide_banner','-nostdin','-v','error','-n','-f','lavfi','-i','testsrc2=size=320x180:rate=24:duration=6','-f','lavfi','-i','sine=frequency=440:sample_rate=48000:duration=6','-c:v','libx264','-pix_fmt','yuv420p','-g','24','-keyint_min','24','-sc_threshold','0','-bf','2','-c:a','aac','-ar','48000','-ac','6','-shortest',$media) 'fixture') -ne 0) { throw 'Delivery fixture generation failed.' }
+        $before = (Get-FileHash -LiteralPath $media -Algorithm SHA256).Hash
+        $adapterOutput = Join-Path $root 'adapter results'
+        if ((Invoke-Owned $dotnet @((Join-Path $runnerRoot 'bin/M8Delivery.dll'),(Join-Path $root 'app'),$media,$adapterOutput) 'adapters' 300) -ne 0) { throw 'Packaged adapter delivery failed.' }
+        $summary = Read-RequiredReport (Join-Path $adapterOutput 'summary.json')
+        if (!$summary.passed) { throw 'Packaged adapter summary did not pass.' }
+        if ((Get-FileHash -LiteralPath $media -Algorithm SHA256).Hash -ne $before) { throw 'Source bytes changed.' }
+    }
+    else {
+    $fixturePath = (Resolve-Path -LiteralPath $Fixture).Path
     Copy-Item -LiteralPath $fixturePath -Destination $media
     $before = (Get-FileHash -LiteralPath $media -Algorithm SHA256).Hash
     $app = Join-Path $root 'app'
@@ -108,10 +141,15 @@ try {
     }
     if (@(Get-ChildItem -LiteralPath $app -Recurse -Filter 'coreclr.dll').Count) { throw '.NET runtime unexpectedly bundled.' }
     if ((Get-FileHash -LiteralPath $media -Algorithm SHA256).Hash -ne $before) { throw 'Source bytes changed.' }
+    }
+    $null = Test-ReleaseInventory -Root (Join-Path $root 'app')
+    if (Test-Path -LiteralPath (Join-Path $root 'fresh extraction cache')) {
+        if (@(Get-ChildItem -LiteralPath (Join-Path $root 'fresh extraction cache') -Force).Count) { throw 'Expanded package unexpectedly used a bundle extraction cache.' }
+    }
 } catch { $failures.Add($_.Exception.ToString()) }
 @{ schemaVersion=1; generatedUtc=[DateTime]::UtcNow; root=$root; passed=$failures.Count -eq 0;
-    scope='M1 prototype delivery workflow: probe/copy/no-clobber/scenes/open/play/seek/step/active-job shutdown';
-    futureEditorWorkflowValidated=$false; pathPolicy='Windows-only PATH; bundle overrides removed; fresh work/temp';
+    scope= $(if ($NonGui) { 'M8 non-GUI production adapters: scenes/project save-reopen/expanded-copy/accurate/no-clobber' } else { 'M1 visible prototype delivery workflow' });
+    guiValidated=(!$NonGui); pathPolicy='Windows-only PATH; bundle overrides removed; fresh work/temp';
     runs=@($runs); failures=@($failures) } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $root 'delivery.json')
 Write-Output $root
 if ($failures.Count) { exit 1 }
